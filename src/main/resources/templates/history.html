@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>📋 面试历史 - 面试模拟助手</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="container">
+        <!-- 侧边栏 -->
+        <aside class="sidebar">
+            <div class="logo">🎯 面试助手</div>
+            <nav>
+                <a href="/" class="nav-item" id="nav-chat">
+                    <span class="icon">💬</span> 面试对话
+                </a>
+                <a href="/history" class="nav-item active" id="nav-history">
+                    <span class="icon">📋</span> 历史记录
+                </a>
+                <a href="/settings" class="nav-item" id="nav-settings">
+                    <span class="icon">⚙️</span> 面试设置
+                </a>
+            </nav>
+            <div class="sidebar-footer">
+                <small>面试模拟助手 v1.0</small>
+            </div>
+        </aside>
+
+        <!-- 主内容区 -->
+        <main class="main-content history-content">
+            <div class="page-header">
+                <h1>📋 面试历史记录</h1>
+                <button class="btn-secondary" onclick="loadHistory()">🔄 刷新</button>
+            </div>
+
+            <div class="history-list" id="history-list">
+                <div class="loading">加载中...</div>
+            </div>
+        </main>
+    </div>
+
+    <!-- 详情弹窗 -->
+    <div class="modal" id="detail-modal" style="display:none;">
+        <div class="modal-content modal-large">
+            <div class="modal-header">
+                <h3 id="modal-title">📋 面试详情</h3>
+                <button class="close-btn" onclick="closeDetailModal()">×</button>
+            </div>
+            <div class="modal-body" id="modal-body">
+                <!-- 动态内容 -->
+            </div>
+            <div class="modal-footer">
+                <button class="btn-generate" onclick="generateReport(currentDetailConvoId)">📄 生成报告</button>
+                <button class="btn-danger" onclick="deleteCurrentConvo()">🗑️ 删除此记录</button>
+                <button class="btn-secondary" onclick="closeDetailModal()">关闭</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let currentDetailConvoId = null;
+
+        document.addEventListener('DOMContentLoaded', loadHistory);
+
+        async function loadHistory() {
+            const list = document.getElementById('history-list');
+            list.innerHTML = '<div class="loading">加载中...</div>';
+            
+            try {
+                const res = await fetch('/api/conversations');
+                const convos = await res.json();
+                
+                if (!convos || convos.length === 0) {
+                    list.innerHTML = `
+                        <div class="empty-state">
+                            <p>暂无面试记录</p>
+                            <button class="btn-primary" onclick="location.href='/'">去面试</button>
+                        </div>
+                    `;
+                    return;
+                }
+                
+                list.innerHTML = convos.map(convo => {
+                    const statusMap = {
+                        'completed': { text: '🔴 已完成', class: 'status-ended' },
+                        'in_progress': { text: '🟢 进行中', class: '' },
+                        'stopped': { text: '⏹️ 已停止', class: 'status-stopped' }
+                    };
+                    const statusInfo = statusMap[convo.status] || statusMap['in_progress'];
+                    const questionCount = convo.messages.filter(m => m.is_question).length;
+                    const userMessages = convo.messages.filter(m => m.role === 'user');
+                    const avgScore = userMessages.length > 0 
+                        ? (userMessages.reduce((sum, m) => sum + (m.score || 0), 0) / userMessages.length).toFixed(1)
+                        : '-';
+                    
+                    return `
+                        <div class="history-item">
+                            <div class="history-item-main" onclick="showDetail('${convo.id}')">
+                                <div class="history-header">
+                                    <span class="history-id">#${convo.id}</span>
+                                    <span class="status-badge ${statusInfo.class}">${statusInfo.text}</span>
+                                </div>
+                                <div class="history-info">
+                                    <span>🏢 ${convo.settings?.company || '未知公司'}</span>
+                                    <span>📋 ${convo.settings?.position || '未知职位'}</span>
+                                </div>
+                                <div class="history-stats">
+                                    <span>📅 ${convo.created_at}</span>
+                                    <span>📝 ${questionCount} 道问题</span>
+                                    <span>⭐ 平均分: ${avgScore}</span>
+                                </div>
+                            </div>
+                            <div class="history-actions">
+                                <button class="btn-generate" onclick="generateReport('${convo.id}', '${convo.settings?.position || '面试'}', '${convo.created_at}')" title="生成报告">📄 生成报告</button>
+                            </div>
+                        </div>
+                    `;
+                }).join('');
+                
+            } catch (e) {
+                list.innerHTML = `<div class="error">加载失败: ${e.message}</div>`;
+            }
+        }
+
+        async function showDetail(convoId) {
+            try {
+                const res = await fetch(`/api/conversation/${convoId}`);
+                const convo = await res.json();
+                
+                currentDetailConvoId = convoId;
+                
+                document.getElementById('modal-title').textContent = 
+                    `📋 面试详情 - ${convo.settings?.position || '面试'} (#${convo.id})`;
+                
+                let html = `
+                    <div class="detail-meta">
+                        <div><strong>公司:</strong> ${convo.settings?.company || '-'}</div>
+                        <div><strong>职位:</strong> ${convo.settings?.position || '-'}</div>
+                        <div><strong>时间:</strong> ${convo.created_at}</div>
+                        <div><strong>状态:</strong> ${
+                        convo.status === 'completed' ? '已完成' : 
+                        convo.status === 'stopped' ? '已停止' : '进行中'
+                    }</div>
+                    </div>
+                    <div class="detail-messages">
+                `;
+                
+                convo.messages.forEach((msg, i) => {
+                    if (msg.role === 'interviewer') {
+                        html += `
+                            <div class="detail-message interviewer">
+                                <div class="msg-avatar">🤖</div>
+                                <div class="msg-content">
+                                    <div class="msg-bubble">${escapeHtml(msg.content)}</div>
+                                    <div class="msg-time">${msg.timestamp}</div>
+                                </div>
+                            </div>
+                        `;
+                    } else {
+                        const scoreClass = msg.score >= 7 ? 'score-high' : (msg.score >= 4 ? 'score-mid' : 'score-low');
+                        html += `
+                            <div class="detail-message user">
+                                <div class="msg-content">
+                                    <div class="msg-bubble user-bubble">${escapeHtml(msg.content)}</div>
+                                    <div class="msg-score ${scoreClass}">得分: ${msg.score}/10</div>
+                                    <div class="msg-evaluation">
+                                        <details>
+                                            <summary>查看评估 & 标准回答</summary>
+                                            <div class="evaluation-content">
+                                                <p><strong>💡 反馈:</strong> ${msg.feedback || '-'}</p>
+                                                <p><strong>✨ 标准回答:</strong> ${msg.model_answer || '-'}</p>
+                                            </div>
+                                        </details>
+                                    </div>
+                                    <div class="msg-time">${msg.timestamp}</div>
+                                </div>
+                                <div class="msg-avatar">👤</div>
+                            </div>
+                        `;
+                    }
+                });
+                
+                html += '</div>';
+                
+                document.getElementById('modal-body').innerHTML = html;
+                document.getElementById('detail-modal').style.display = 'flex';
+                
+            } catch (e) {
+                alert('加载详情失败: ' + e.message);
+            }
+        }
+
+        function closeDetailModal() {
+            document.getElementById('detail-modal').style.display = 'none';
+            currentDetailConvoId = null;
+        }
+
+        async function deleteCurrentConvo() {
+            if (!currentDetailConvoId) return;
+            
+            if (!confirm('确定要删除这条面试记录吗？')) return;
+            
+            try {
+                await fetch(`/api/conversation/${currentDetailConvoId}/delete`, {
+                    method: 'DELETE'
+                });
+                closeDetailModal();
+                loadHistory();
+            } catch (e) {
+                alert('删除失败: ' + e.message);
+            }
+        }
+
+        function generateReport(convoId, position, createdAt) {
+            const filename = `面试报告_${position}_${createdAt ? createdAt.slice(0, 10) : ''}.md`;
+            window.location.href = `/api/conversation/${convoId}/report`;
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+    </script>
+</body>
+</html>

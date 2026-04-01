@@ -1,0 +1,467 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🤖 面试模拟助手</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="container">
+        <aside class="sidebar">
+            <div class="logo">🎯 面试助手</div>
+            <nav>
+                <a href="/" class="nav-item active" id="nav-chat"><span class="icon">💬</span> 面试对话</a>
+                <a href="/history" class="nav-item" id="nav-history"><span class="icon">📋</span> 历史记录</a>
+                <a href="/settings" class="nav-item" id="nav-settings"><span class="icon">⚙️</span> 面试设置</a>
+            </nav>
+            <div class="sidebar-footer"><small>面试模拟助手 v2.0</small></div>
+        </aside>
+
+        <main class="main-content">
+            <div id="start-section" class="start-section">
+                <div class="hero">
+                    <h1>🎤 准备好面试了吗？</h1>
+                    <p>AI大模型驱动，模拟真实面试场景</p>
+                    <div class="settings-preview" id="settings-preview">
+                        <div class="preview-row">
+                            <span>📌 职位</span>
+                            <strong id="preview-position">-</strong>
+                        </div>
+                        <div class="preview-row">
+                            <span>🏢 公司</span>
+                            <strong id="preview-company">-</strong>
+                        </div>
+                        <div class="preview-row">
+                            <span>📊 经验</span>
+                            <strong id="preview-experience">-</strong>
+                        </div>
+                        <div class="preview-row">
+                            <span>🤖 模型</span>
+                            <strong id="preview-model">-</strong>
+                        </div>
+                    </div>
+                    <div class="start-buttons">
+                        <button class="btn-primary btn-large" onclick="startInterview()">🚀 开始面试</button>
+                        <button class="btn-secondary" onclick="location.href='/settings'">⚙️ 修改设置</button>
+                    </div>
+                    <div id="config-warning" class="config-warning" style="display:none;">⚠️ 请先配置大模型API才能开始面试</div>
+                </div>
+            </div>
+
+            <div id="chat-section" class="chat-section" style="display:none;">
+                <div class="chat-header">
+                    <div class="interview-info">
+                        <h2 id="interview-title">💬 面试进行中</h2>
+                        <span class="status-badge" id="status-badge">🟢 进行中</span>
+                    </div>
+                    <div class="chat-actions">
+                        <button class="btn-small btn-danger-small" id="stop-btn" onclick="stopInterview()">⏹️ 停止面试</button>
+                        <button class="btn-small" onclick="showHistoryList()">📋 历史</button>
+                        <button class="btn-small" onclick="resetInterview()">🔄 新面试</button>
+                    </div>
+                </div>
+                <div class="messages-container" id="messages-container"></div>
+                <div class="input-area" id="input-area">
+                    <div class="input-wrapper">
+                        <textarea id="answer-input" placeholder="请输入你的回答..." rows="3" onkeydown="handleKeyDown(event)"></textarea>
+                        <div class="input-actions">
+                            <button class="btn-voice" id="voice-btn" onclick="toggleVoiceInput()" title="语音输入">🎤</button>
+                            <button class="btn-send" onclick="sendAnswer()" id="send-btn">发送 ➤</button>
+                        </div>
+                    </div>
+                    <div class="input-hint"><span>按 Enter 发送，Shift+Enter 换行</span></div>
+                </div>
+                <div class="end-area" id="end-area" style="display:none;">
+                    <div class="end-message">
+                        <h3 id="end-title">🎉 面试结束</h3>
+                        <p id="end-desc">感谢你的参与！</p>
+                        <div id="final-score" class="final-score"></div>
+                        <button class="btn-primary" onclick="resetInterview()">🔄 开始新面试</button>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script>
+        var currentConvoId = null;
+        var isInterviewActive = false;
+        var voiceTestActive = false;
+        var voiceTestStream = null;
+        var voiceTestRecorder = null;
+
+        document.addEventListener('DOMContentLoaded', function() {
+            loadSettingsPreview();
+            checkResumeInterview();
+        });
+
+        async function loadSettingsPreview() {
+            try {
+                var res = await fetch('/api/settings');
+                var settings = await res.json();
+                document.getElementById('preview-position').textContent = settings.position || '未设置';
+                document.getElementById('preview-company').textContent = settings.company || '未设置';
+                document.getElementById('preview-experience').textContent = settings.experience || '未设置';
+                var modelType = (settings.model_config && settings.model_config.type || '未配置').toUpperCase();
+                var modelName = settings.model_config && settings.model_config.model || '';
+                document.getElementById('preview-model').textContent = modelType + (modelName ? ' (' + modelName + ')' : '');
+                if (!settings.model_config || !settings.model_config.api_key) {
+                    document.getElementById('config-warning').style.display = 'block';
+                    document.querySelector('.start-buttons .btn-primary').disabled = true;
+                } else {
+                    document.getElementById('config-warning').style.display = 'none';
+                    document.querySelector('.start-buttons .btn-primary').disabled = false;
+                }
+            } catch (e) {
+                console.error('加载设置失败', e);
+            }
+        }
+
+        async function checkResumeInterview() {
+            try {
+                var res = await fetch('/api/conversations');
+                var convos = await res.json();
+                for (var i = 0; i < convos.length; i++) {
+                    if (convos[i].status === 'in_progress') {
+                        currentConvoId = convos[i].id;
+                        isInterviewActive = true;
+                        document.getElementById('start-section').style.display = 'none';
+                        document.getElementById('chat-section').style.display = 'flex';
+                        document.getElementById('input-area').style.display = 'block';
+                        document.getElementById('end-area').style.display = 'none';
+                        renderMessages(convos[i].messages);
+                        scrollToBottom();
+                        document.getElementById('answer-input').focus();
+                        break;
+                    }
+                }
+            } catch (e) {
+                console.error('检查恢复面试失败', e);
+            }
+        }
+
+        async function startInterview() {
+            currentConvoId = null;
+            isInterviewActive = true;
+            document.getElementById('start-section').style.display = 'none';
+            document.getElementById('chat-section').style.display = 'flex';
+            document.getElementById('input-area').style.display = 'block';
+            document.getElementById('end-area').style.display = 'none';
+            var container = document.getElementById('messages-container');
+            container.innerHTML = '<div class="message message-interviewer"><div class="message-avatar">🤖</div><div class="message-content"><div class="message-bubble">正在启动面试，请稍候...</div></div></div>';
+            try {
+                var res = await fetch('/api/conversation/start', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({})});
+                var data = await res.json();
+                if (data.error) {
+                    if (data.need_config) {
+                        alert(data.error);
+                        location.href = '/settings';
+                    } else {
+                        alert('启动失败: ' + data.error);
+                        resetInterview();
+                    }
+                    return;
+                }
+                currentConvoId = data.convo_id;
+                renderMessages(data.convo.messages);
+                scrollToBottom();
+                document.getElementById('answer-input').focus();
+            } catch (e) {
+                alert('启动面试失败: ' + e.message);
+                resetInterview();
+            }
+        }
+
+        async function sendAnswer() {
+            var input = document.getElementById('answer-input');
+            var answer = input.value.trim();
+            var sendBtn = document.getElementById('send-btn');
+            if (!answer) {
+                alert('请输入回答');
+                return;
+            }
+            if (!isInterviewActive) return;
+            sendBtn.disabled = true;
+            sendBtn.textContent = '⏳...';
+            input.disabled = true;
+            try {
+                var res = await fetch('/api/conversation/' + currentConvoId + '/answer', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({answer: answer})});
+                var data = await res.json();
+                renderMessages(data.messages);
+                input.value = '';
+                if (data.is_finished) {
+                    isInterviewActive = false;
+                    document.getElementById('input-area').style.display = 'none';
+                    document.getElementById('end-area').style.display = 'flex';
+                    document.getElementById('status-badge').textContent = '🔴 已结束';
+                    document.getElementById('status-badge').className = 'status-badge status-ended';
+                    document.getElementById('stop-btn').style.display = 'none';
+                    var userMsgs = data.messages.filter(function(m) { return m.role === 'user'; });
+                    if (userMsgs.length > 0) {
+                        var total = 0;
+                        for (var i = 0; i < userMsgs.length; i++) { total += (userMsgs[i].score || 0); }
+                        var avg = (total / userMsgs.length).toFixed(1);
+                        document.getElementById('final-score').innerHTML = '📊 本次面试平均分: <strong>' + avg + '</strong>/10';
+                    }
+                }
+                scrollToBottom();
+            } catch (e) {
+                alert('发送失败: ' + e.message);
+            } finally {
+                sendBtn.disabled = false;
+                sendBtn.textContent = '发送 ➤';
+                input.disabled = false;
+                input.focus();
+            }
+        }
+
+        function renderMessages(messages) {
+            var container = document.getElementById('messages-container');
+            container.innerHTML = '';
+            for (var i = 0; i < messages.length; i++) {
+                var msg = messages[i];
+                var div = document.createElement('div');
+                div.className = 'message ' + (msg.role === 'interviewer' ? 'message-interviewer' : 'message-user');
+                if (msg.role === 'interviewer') {
+                    div.innerHTML = '<div class="message-avatar">🤖</div><div class="message-content"><div class="message-bubble">' + escapeHtml(msg.content) + '</div><div class="message-time">' + msg.timestamp + '</div></div>';
+                } else {
+                    var scoreHtml = '';
+                    if (msg.score !== undefined) {
+                        var cls = msg.score >= 7 ? 'score-high' : (msg.score >= 4 ? 'score-mid' : 'score-low');
+                        scoreHtml = '<details class="eval-details ' + cls + '"><summary>得分: ' + msg.score + '/10<span class="eval-expand">查看详情 ▼</span></summary><div class="eval-content"><p><strong>💡 点评:</strong> ' + escapeHtml(msg.feedback || '') + '</p><p><strong>✨ 参考回答:</strong> ' + escapeHtml(msg.model_answer || '') + '</p></div></details>';
+                    }
+                    div.innerHTML = '<div class="message-content">' + scoreHtml + '<div class="message-bubble user-bubble">' + escapeHtml(msg.content) + '</div><div class="message-time">' + msg.timestamp + '</div></div><div class="message-avatar user-avatar">👤</div>';
+                }
+                container.appendChild(div);
+            }
+        }
+
+        async function stopInterview() {
+            if (!currentConvoId) return;
+            if (!confirm('确定要停止面试吗？')) return;
+            try {
+                var res = await fetch('/api/conversation/' + currentConvoId);
+                var convo = await res.json();
+                convo.messages.push({role: 'interviewer', content: '面试已由你主动结束。感谢参与！', timestamp: new Date().toLocaleString('zh-CN')});
+                convo.status = 'stopped';
+                await fetch('/api/conversation/' + currentConvoId + '/stop', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({messages: convo.messages, status: 'stopped'})});
+                isInterviewActive = false;
+                document.getElementById('input-area').style.display = 'none';
+                document.getElementById('end-area').style.display = 'flex';
+                document.getElementById('status-badge').textContent = '⏹️ 已停止';
+                document.getElementById('status-badge').className = 'status-badge status-ended';
+                document.getElementById('stop-btn').style.display = 'none';
+                document.getElementById('end-title').textContent = '⏹️ 面试已停止';
+                document.getElementById('end-desc').textContent = '你可以查看回答评估，继续改进';
+                var userMsgs = convo.messages.filter(function(m) { return m.role === 'user'; });
+                if (userMsgs.length > 0) {
+                    var total = 0;
+                    for (var i = 0; i < userMsgs.length; i++) { total += (userMsgs[i].score || 0); }
+                    var avg = (total / userMsgs.length).toFixed(1);
+                    document.getElementById('final-score').innerHTML = '📊 共 ' + userMsgs.length + ' 道题 | 平均分: <strong>' + avg + '</strong>/10';
+                } else {
+                    document.getElementById('final-score').innerHTML = '📊 你还未回答任何问题';
+                }
+                renderMessages(convo.messages);
+            } catch (e) {
+                alert('停止面试失败: ' + e.message);
+            }
+        }
+
+        async function resetInterview() {
+            if (isInterviewActive && currentConvoId) {
+                if (!confirm('确定要结束当前面试并开始新面试吗？当前面试记录将保存。')) return;
+                try {
+                    var res = await fetch('/api/conversation/' + currentConvoId);
+                    var convo = await res.json();
+                    convo.messages.push({role: 'interviewer', content: '面试已由你主动结束。感谢参与！', timestamp: new Date().toLocaleString('zh-CN')});
+                    convo.status = 'stopped';
+                    await fetch('/api/conversation/' + currentConvoId + '/stop', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({messages: convo.messages, status: 'stopped'})});
+                } catch (e) {
+                    console.error('保存面试记录失败', e);
+                }
+            }
+            currentConvoId = null;
+            isInterviewActive = false;
+            document.getElementById('chat-section').style.display = 'none';
+            document.getElementById('start-section').style.display = 'flex';
+            document.getElementById('status-badge').textContent = '🟢 进行中';
+            document.getElementById('status-badge').className = 'status-badge';
+            document.getElementById('stop-btn').style.display = '';
+            loadSettingsPreview();
+        }
+
+        function showHistoryList() { location.href = '/history'; }
+
+        function handleKeyDown(event) {
+            if (event.key === 'Enter' && !event.shiftKey) {
+                event.preventDefault();
+                sendAnswer();
+            }
+        }
+
+        function scrollToBottom() {
+            var container = document.getElementById('messages-container');
+            container.scrollTop = container.scrollHeight;
+        }
+
+        function escapeHtml(text) {
+            var div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // ========== 语音输入 ==========
+        function toggleVoiceInput() {
+            if (voiceTestActive) {
+                stopVoiceRecording();
+            } else {
+                startVoiceRecording();
+            }
+        }
+
+        function startVoiceRecording() {
+            var btn = document.getElementById('voice-btn');
+            try {
+                navigator.mediaDevices.getUserMedia({audio: true}).then(function(stream) {
+                    voiceTestStream = stream;
+                    var mediaRecorder = new MediaRecorder(stream, {mimeType: 'audio/webm;codecs=opus'});
+                    voiceTestRecorder = mediaRecorder;
+                    var chunks = [];
+                    mediaRecorder.ondataavailable = function(e) {
+                        if (e.data.size > 0) chunks.push(e.data);
+                    };
+                    mediaRecorder.onstop = function() {
+                        processVoiceRecording(chunks);
+                    };
+                    mediaRecorder.start();
+                    voiceTestActive = true;
+                    btn.textContent = '🔴';
+                    btn.classList.add('voice-active');
+                }).catch(function(e) {
+                    alert('无法访问麦克风: ' + e.message);
+                });
+            } catch (e) {
+                alert('麦克风访问失败: ' + e.message);
+            }
+        }
+
+        function stopVoiceRecording() {
+            var btn = document.getElementById('voice-btn');
+            if (voiceTestRecorder && voiceTestRecorder.state === 'recording') {
+                voiceTestRecorder.stop();
+            }
+            if (voiceTestStream) {
+                voiceTestStream.getTracks().forEach(function(track) { track.stop(); });
+            }
+            voiceTestActive = false;
+            btn.textContent = '🎤';
+            btn.classList.remove('voice-active');
+        }
+
+        async function processVoiceRecording(chunks) {
+            var btn = document.getElementById('voice-btn');
+            btn.textContent = '⏳';
+            btn.disabled = true;
+            var webmBlob = new Blob(chunks, {type: 'audio/webm'});
+            var audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            webmBlob.arrayBuffer().then(function(arrayBuffer) {
+                return audioContext.decodeAudioData(arrayBuffer);
+            }).then(function(audioBuffer) {
+                var offlineCtx = new OfflineAudioContext(1, audioBuffer.duration * 16000, 16000);
+                var source = offlineCtx.createBufferSource();
+                source.buffer = audioBuffer;
+                source.connect(offlineCtx.destination);
+                source.start();
+                return offlineCtx.startRendering();
+            }).then(function(renderedBuffer) {
+                var pcmData = renderedBuffer.getChannelData(0);
+                var int16Array = new Int16Array(pcmData.length);
+                for (var i = 0; i < pcmData.length; i++) {
+                    var s = Math.max(-1, Math.min(1, pcmData[i]));
+                    int16Array[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+                }
+                var wavBlob = createWavBlob(int16Array, 16000);
+                audioContext.close();
+                return wavBlob;
+            }).then(function(wavBlob) {
+                var formData = new FormData();
+                formData.append('audio', wavBlob, 'audio.wav');
+                return fetch('/api/voice/recognize', {method: 'POST', body: formData});
+            }).then(function(res) {
+                return res.json();
+            }).then(function(data) {
+                console.log('语音识别返回:', data);
+                var input = document.getElementById('answer-input');
+                input.disabled = false;
+                if (data.error) {
+                    alert('识别失败: ' + data.error);
+                } else if (!data.text || data.text.trim() === '') {
+                    alert('识别结果为空，请再说一次');
+                } else {
+                    input.value = data.text;
+                    input.focus();
+                }
+            }).catch(function(e) {
+                console.error('处理失败:', e);
+                alert('处理失败: ' + e.message);
+            }).finally(function() {
+                btn.textContent = '🎤';
+                btn.disabled = false;
+            });
+        }
+
+        function createWavBlob(pcmData, sampleRate) {
+            var buffer = new ArrayBuffer(44 + pcmData.length * 2);
+            var view = new DataView(buffer);
+            view.setUint32(0, 0x52494646, false);
+            view.setUint32(4, 36 + pcmData.length * 2, true);
+            view.setUint32(8, 0x57415645, false);
+            view.setUint32(12, 0x666D7420, false);
+            view.setUint32(16, 16, true);
+            view.setUint16(20, 1, true);
+            view.setUint16(22, 1, true);
+            view.setUint32(24, sampleRate, true);
+            view.setUint32(28, sampleRate * 2, true);
+            view.setUint16(32, 2, true);
+            view.setUint16(34, 16, true);
+            view.setUint32(36, 0x64617461, false);
+            view.setUint32(40, pcmData.length * 2, true);
+            var offset = 44;
+            for (var i = 0; i < pcmData.length; i++) {
+                view.setInt16(offset, pcmData[i], true);
+                offset += 2;
+            }
+            return new Blob([buffer], {type: 'audio/wav'});
+        }
+    </script>
+
+    <style>
+        .config-warning { background: #fef3c7; color: #92400e; padding: 12px 20px; border-radius: 8px; margin-top: 20px; font-size: 14px; }
+        .preview-row { display: flex; justify-content: space-between; padding: 6px 0; }
+        .preview-row span { color: #6b7280; }
+        .preview-row strong { color: #111827; }
+        .start-buttons { display: flex; flex-direction: column; gap: 12px; margin-top: 24px; }
+        .final-score { font-size: 18px; padding: 16px; background: #f3f4f6; border-radius: 8px; margin-bottom: 24px; }
+        .btn-danger-small { background: #fee2e2; color: #991b1b; }
+        .btn-danger-small:hover { background: #fecaca; }
+        .eval-details { margin-bottom: 8px; border-radius: 8px; overflow: hidden; }
+        .eval-details summary { cursor: pointer; font-size: 14px; padding: 8px 12px; display: flex; justify-content: space-between; align-items: center; }
+        .eval-details summary::-webkit-details-marker { display: none; }
+        .eval-expand { font-size: 13px; opacity: 0.8; margin-left: 8px; }
+        .eval-details.score-high { background: #d1fae5; color: #065f46; }
+        .eval-details.score-mid { background: #fef3c7; color: #92400e; }
+        .eval-details.score-low { background: #fee2e2; color: #991b1b; }
+        .eval-content { padding: 12px; background: white; border-top: 1px solid rgba(0,0,0,0.05); font-size: 13px; }
+        .eval-content p { margin-bottom: 8px; line-height: 1.6; }
+        .eval-content p:last-child { margin-bottom: 0; }
+        .message-user { flex-direction: row-reverse; }
+        .message-user .message-avatar { margin-left: 0; margin-right: 12px; }
+        .input-actions { display: flex; gap: 8px; align-items: flex-end; }
+        .btn-voice { width: 44px; height: 44px; border: none; border-radius: 10px; background: #f3f4f6; cursor: pointer; font-size: 18px; transition: all 0.2s; }
+        .btn-voice:hover { background: #e5e7eb; }
+        .btn-voice.voice-active { background: #fee2e2; }
+    </style>
+</body>
+</html>

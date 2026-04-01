@@ -1,0 +1,841 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>⚙️ 面试设置 - 面试模拟助手</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="container">
+        <aside class="sidebar">
+            <div class="logo">🎯 面试助手</div>
+            <nav>
+                <a href="/" class="nav-item" id="nav-chat"><span class="icon">💬</span> 面试对话</a>
+                <a href="/history" class="nav-item" id="nav-history"><span class="icon">📋</span> 历史记录</a>
+                <a href="/settings" class="nav-item active" id="nav-settings"><span class="icon">⚙️</span> 面试设置</a>
+            </nav>
+            <div class="sidebar-footer"><small>面试模拟助手 v2.0</small></div>
+        </aside>
+
+        <main class="main-content settings-content">
+            <div class="page-header">
+                <h1>⚙️ 面试设置</h1>
+            </div>
+
+            <form id="settings-form" class="settings-form">
+                <!-- 语音识别配置 -->
+                <div class="form-section">
+                    <h3>🎤 语音识别配置</h3>
+                    <p class="form-hint">选择服务商并配置API（百度：ai.baidu.com | 讯飞：console.xfyun.cn）</p>
+                    
+                    <div class="form-group">
+                        <label for="voice_provider">语音服务商</label>
+                        <select id="voice_provider" name="voice_provider" onchange="toggleVoiceProvider()">
+                            <option value="baidu">百度语音</option>
+                            <option value="xfyun">科大讯飞</option>
+                        </select>
+                    </div>
+
+                    <!-- 百度配置 -->
+                    <div id="baidu-config" class="voice-config">
+                        <div class="form-group">
+                            <label for="baidu_app_id">App ID</label>
+                            <input type="text" id="baidu_app_id" name="baidu_app_id" 
+                                   placeholder="输入百度App ID" autocomplete="off">
+                        </div>
+
+                        <div class="form-group">
+                            <label for="baidu_api_key">API Key</label>
+                            <input type="password" id="baidu_api_key" name="baidu_api_key" 
+                                   placeholder="输入百度API Key" autocomplete="off">
+                        </div>
+
+                        <div class="form-group">
+                            <label for="baidu_secret_key">Secret Key</label>
+                            <input type="password" id="baidu_secret_key" name="baidu_secret_key" 
+                                   placeholder="输入百度Secret Key" autocomplete="off">
+                        </div>
+                    </div>
+
+                    <!-- 讯飞配置 -->
+                    <div id="xfyun-config" class="voice-config" style="display:none;">
+                        <div class="form-group">
+                            <label for="xfyun_app_id">App ID</label>
+                            <input type="text" id="xfyun_app_id" name="xfyun_app_id" 
+                                   placeholder="输入讯飞App ID" autocomplete="off">
+                        </div>
+
+                        <div class="form-group">
+                            <label for="xfyun_api_key">API Key</label>
+                            <input type="password" id="xfyun_api_key" name="xfyun_api_key" 
+                                   placeholder="输入讯飞API Key" autocomplete="off">
+                        </div>
+
+                        <div class="form-group">
+                            <label for="xfyun_api_secret">API Secret</label>
+                            <input type="password" id="xfyun_api_secret" name="xfyun_api_secret" 
+                                   placeholder="输入讯飞API Secret" autocomplete="off">
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <button type="button" class="btn-secondary" onclick="testVoiceConnection()">
+                            🔊 测试语音识别
+                        </button>
+                        <span id="voice-test-result" class="test-result"></span>
+                    </div>
+
+                    <div class="voice-test-section">
+                        <div class="form-hint">录音测试：点击开始录音，说话后自动停止并识别</div>
+                        <div class="voice-test-controls">
+                            <button type="button" class="btn-voice-test" id="voice-test-btn" onclick="toggleVoiceTest()">
+                                🎤 开始录音
+                            </button>
+                            <div class="voice-test-result" id="voice-test-result-text"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 大模型配置 -->
+                <div class="form-section">
+                    <h3>🤖 大模型配置</h3>
+                    <p class="form-hint">配置API后，面试问题将由AI动态生成</p>
+                    
+                    <div class="form-group">
+                        <label for="model_type">API 类型</label>
+                        <select id="model_type" name="model_type" onchange="toggleModelFields()">
+                            <option value="openai">OpenAI (GPT-4/GPT-3.5)</option>
+                            <option value="claude">Anthropic Claude</option>
+                            <option value="minimax">MiniMax (海螺AI)</option>
+                            <option value="custom">自定义 (兼容OpenAI格式)</option>
+                        </select>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="api_key">API Key</label>
+                        <input type="password" id="api_key" name="api_key" 
+                               placeholder="sk-..." autocomplete="off">
+                    </div>
+
+                    <div id="custom-url-group" class="form-group" style="display:none;">
+                        <label for="base_url">API 地址</label>
+                        <input type="text" id="base_url" name="base_url" 
+                               placeholder="https://api.minimax.chat/v1">
+                    </div>
+
+                    <div class="form-group" id="model-select-group">
+                        <label for="model_select">模型名称</label>
+                        <select id="model_select" name="model_select" onchange="toggleModelInput()">
+                            <optgroup label="OpenAI">
+                                <option value="gpt-4">GPT-4</option>
+                                <option value="gpt-4-turbo-preview">GPT-4 Turbo</option>
+                                <option value="gpt-3.5-turbo">GPT-3.5 Turbo</option>
+                            </optgroup>
+                            <optgroup label="Claude">
+                                <option value="claude-3-opus-20240229">Claude 3 Opus</option>
+                                <option value="claude-3-sonnet-20240229">Claude 3 Sonnet</option>
+                                <option value="claude-3-haiku-20240307">Claude 3 Haiku</option>
+                            </optgroup>
+                            <optgroup label="MiniMax">
+                                <option value="abab6-chat">ABAB6-Chat</option>
+                                <option value="abab6.5s-chat">ABAB6.5s-Chat (高速)</option>
+                                <option value="abab6.5-chat">ABAB6.5-Chat</option>
+                                <option value="MiniMax-M2.7">MiniMax-M2.7</option>
+                                <option value="MiniMax-M2.7-highspeed">MiniMax-M2.7-Highspeed</option>
+                                <option value="MiniMax-Text-01">MiniMax-Text-01</option>
+                                <option value="MiniMax-VL-01">MiniMax-VL-01 (视觉)</option>
+                            </optgroup>
+                            <optgroup label="自定义">
+                                <option value="__custom__">手动输入...</option>
+                            </optgroup>
+                        </select>
+                    </div>
+
+                    <div class="form-group" id="model-input-group" style="display:none;">
+                        <label for="model">模型名称 (手动输入)</label>
+                        <input type="text" id="model" name="model" placeholder="输入模型名称">
+                    </div>
+
+                    <div class="form-group">
+                        <button type="button" class="btn-secondary" onclick="testConnection()">
+                            🔗 测试连接
+                        </button>
+                        <span id="test-result" class="test-result"></span>
+                    </div>
+                </div>
+
+                <!-- 面试基本信息 -->
+                <div class="form-section">
+                    <h3>📌 面试基本信息</h3>
+                    
+                    <div class="form-group">
+                        <label for="interviewer_name">面试官名称</label>
+                        <input type="text" id="interviewer_name" name="interviewer_name" 
+                               placeholder="面试官小智">
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="company">公司名称</label>
+                        <input type="text" id="company" name="company" 
+                               placeholder="某知名互联网公司">
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="position">应聘职位</label>
+                        <input type="text" id="position" name="position" 
+                               placeholder="Python开发工程师">
+                    </div>
+
+                    <div class="form-group">
+                        <label for="experience">经验要求</label>
+                        <select id="experience" name="experience">
+                            <option value="应届生">应届生</option>
+                            <option value="1-2年">1-2年</option>
+                            <option value="3-5年" selected>3-5年</option>
+                            <option value="5-10年">5-10年</option>
+                            <option value="10年以上">10年以上</option>
+                        </select>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="interview_type">面试类型</label>
+                        <select id="interview_type" name="interview_type">
+                            <option value="技术面试" selected>技术面试</option>
+                            <option value="行为面试">行为面试</option>
+                            <option value="综合面试">综合面试</option>
+                            <option value="HR面试">HR面试</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="form-actions">
+                    <button type="submit" class="btn-primary">💾 保存设置</button>
+                    <button type="button" class="btn-secondary" onclick="resetForm()">🔄 恢复默认</button>
+                </div>
+            </form>
+
+            <div class="save-toast" id="save-toast">✅ 设置已保存！</div>
+        </main>
+    </div>
+
+    <script>
+        const DEFAULT_SETTINGS = {
+            model_type: "openai",
+            api_key: "",
+            base_url: "https://api.openai.com/v1",
+            model: "gpt-4",
+            interviewer_name: "面试官小智",
+            company: "某知名互联网公司",
+            position: "Python开发工程师",
+            experience: "3-5年",
+            interview_type: "技术面试"
+        };
+
+        let currentSettings = {};
+
+        document.addEventListener('DOMContentLoaded', loadSettings);
+
+        async function loadSettings() {
+            try {
+                const res = await fetch('/api/settings');
+                const settings = await res.json();
+                currentSettings = settings;
+                
+                const modelType = settings.model_config?.type || 'openai';
+                
+                // 填充表单
+                document.getElementById('model_type').value = modelType;
+                document.getElementById('api_key').value = settings.model_config?.api_key || '';
+                document.getElementById('base_url').value = settings.model_config?.base_url || 'https://api.openai.com/v1';
+                
+                document.getElementById('interviewer_name').value = settings.interviewer_name || '';
+                document.getElementById('company').value = settings.company || '';
+                document.getElementById('position').value = settings.position || '';
+                document.getElementById('experience').value = settings.experience || '3-5年';
+                document.getElementById('interview_type').value = settings.interview_type || '技术面试';
+                
+                // 语音配置
+                const voiceProvider = settings.voice_provider || 'baidu';
+                document.getElementById('voice_provider').value = voiceProvider;
+                toggleVoiceProvider();
+                
+                // 百度语音配置
+                document.getElementById('baidu_app_id').value = settings.baidu_voice?.app_id || '';
+                document.getElementById('baidu_api_key').value = settings.baidu_voice?.api_key || '';
+                document.getElementById('baidu_secret_key').value = settings.baidu_voice?.secret_key || '';
+                
+                // 讯飞语音配置
+                document.getElementById('xfyun_app_id').value = settings.xfyun_voice?.app_id || '';
+                document.getElementById('xfyun_api_key').value = settings.xfyun_voice?.api_key || '';
+                document.getElementById('xfyun_api_secret').value = settings.xfyun_voice?.api_secret || '';
+                
+                toggleModelFields();
+                
+                // 设置模型值
+                const modelValue = settings.model_config?.model || '';
+                const select = document.getElementById('model_select');
+                const input = document.getElementById('model');
+                
+                if (modelType === 'custom') {
+                    input.value = modelValue;
+                } else {
+                    // 检查是否在预设列表中
+                    const optionExists = Array.from(select.options).some(opt => opt.value === modelValue);
+                    if (optionExists) {
+                        select.value = modelValue;
+                    } else {
+                        select.value = '__custom__';
+                        inputGroup.style.display = 'block';
+                        input.value = modelValue;
+                    }
+                }
+                
+            } catch (e) {
+                console.error('加载失败', e);
+            }
+        }
+
+        function toggleVoiceProvider() {
+            const provider = document.getElementById('voice_provider').value;
+            const baiduConfig = document.getElementById('baidu-config');
+            const xfyunConfig = document.getElementById('xfyun-config');
+            
+            if (provider === 'baidu') {
+                baiduConfig.style.display = 'block';
+                xfyunConfig.style.display = 'none';
+            } else {
+                baiduConfig.style.display = 'none';
+                xfyunConfig.style.display = 'block';
+            }
+        }
+
+        function toggleModelFields() {
+            const type = document.getElementById('model_type').value;
+            const customGroup = document.getElementById('custom-url-group');
+            const modelSelectGroup = document.getElementById('model-select-group');
+            const modelInputGroup = document.getElementById('model-input-group');
+            
+            // minimax 和 custom 都需要显示 URL 输入
+            if (type === 'custom' || type === 'minimax') {
+                customGroup.style.display = 'block';
+            } else {
+                customGroup.style.display = 'none';
+            }
+
+            // 根据类型显示/隐藏模型选择器
+            if (type === 'custom') {
+                modelSelectGroup.style.display = 'none';
+                modelInputGroup.style.display = 'block';
+            } else {
+                modelSelectGroup.style.display = 'block';
+                modelInputGroup.style.display = 'none';
+            }
+
+            // 更新 URL 默认值
+            const urlInput = document.getElementById('base_url');
+            const defaultUrls = {
+                openai: 'https://api.openai.com/v1',
+                claude: 'https://api.anthropic.com',
+                minimax: 'https://api.minimax.chat/v1',
+                custom: ''
+            };
+            if (!urlInput.value || urlInput.value === 'https://api.openai.com/v1' || urlInput.value === 'https://api.anthropic.com') {
+                urlInput.value = defaultUrls[type] || '';
+            }
+
+            // 更新模型选择器选项
+            updateModelOptions(type);
+        }
+
+        function updateModelOptions(type) {
+            const select = document.getElementById('model_select');
+            
+            // 保存当前值
+            const currentValue = select.value;
+            
+            // 定义各类型的模型列表
+            const models = {
+                openai: [
+                    {value: 'gpt-4', label: 'GPT-4'},
+                    {value: 'gpt-4-turbo-preview', label: 'GPT-4 Turbo'},
+                    {value: 'gpt-4-0125-preview', label: 'GPT-4 Turbo (0125)'},
+                    {value: 'gpt-3.5-turbo', label: 'GPT-3.5 Turbo'},
+                    {value: 'gpt-3.5-turbo-0125', label: 'GPT-3.5 Turbo (0125)'}
+                ],
+                claude: [
+                    {value: 'claude-3-5-sonnet-20241022', label: 'Claude 3.5 Sonnet'},
+                    {value: 'claude-3-opus-20240229', label: 'Claude 3 Opus'},
+                    {value: 'claude-3-sonnet-20240229', label: 'Claude 3 Sonnet'},
+                    {value: 'claude-3-haiku-20240307', label: 'Claude 3 Haiku'}
+                ],
+                minimax: [
+                    {value: 'MiniMax-M2.7', label: 'MiniMax-M2.7'},
+                    {value: 'MiniMax-M2.7-highspeed', label: 'MiniMax-M2.7-Highspeed'},
+                    {value: 'abab6.5s-chat', label: 'ABAB6.5s-Chat (高速)'},
+                    {value: 'abab6.5-chat', label: 'ABAB6.5-Chat'},
+                    {value: 'abab6-chat', label: 'ABAB6-Chat'},
+                    {value: 'abab5.5-chat', label: 'ABAB5.5-Chat'},
+                    {value: 'MiniMax-Text-01', label: 'MiniMax-Text-01'},
+                    {value: 'MiniMax-VL-01', label: 'MiniMax-VL-01 (视觉)'}
+                ]
+            };
+
+            if (models[type]) {
+                // 构建新的选项HTML
+                let html = '';
+                for (const opt of models[type]) {
+                    const selected = opt.value === currentValue ? 'selected' : '';
+                    html += `<option value="${opt.value}">${opt.label}</option>`;
+                }
+                html += '<option value="__custom__">手动输入...</option>';
+                select.innerHTML = html;
+                
+                // 如果当前值不在列表中，选第一个
+                if (!models[type].find(m => m.value === currentValue)) {
+                    select.value = models[type][0].value;
+                }
+            }
+        }
+
+        function toggleModelInput() {
+            const select = document.getElementById('model_select');
+            const inputGroup = document.getElementById('model-input-group');
+            const input = document.getElementById('model');
+            
+            if (select.value === '__custom__') {
+                inputGroup.style.display = 'block';
+                input.value = '';
+                input.focus();
+            } else {
+                inputGroup.style.display = 'none';
+                input.value = select.value;
+            }
+        }
+
+        async function testConnection() {
+            const btn = event.target;
+            const resultSpan = document.getElementById('test-result');
+            
+            btn.disabled = true;
+            btn.textContent = '🔄 测试中...';
+            resultSpan.textContent = '';
+            
+            const type = document.getElementById('model_type').value;
+            let model;
+            if (type === 'custom') {
+                model = document.getElementById('model').value.trim();
+            } else {
+                const selectVal = document.getElementById('model_select').value;
+                model = selectVal === '__custom__'
+                    ? document.getElementById('model').value.trim()
+                    : selectVal;
+            }
+            
+            const modelConfig = {
+                type: type,
+                api_key: document.getElementById('api_key').value,
+                base_url: document.getElementById('base_url').value,
+                model: model
+            };
+            
+            try {
+                const res = await fetch('/api/model/test', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ model_config: modelConfig })
+                });
+                
+                const data = await res.json();
+                
+                if (data.status === 'ok') {
+                    resultSpan.textContent = '✅ ' + data.message;
+                    resultSpan.className = 'test-result success';
+                } else {
+                    resultSpan.textContent = '❌ ' + data.message;
+                    resultSpan.className = 'test-result error';
+                }
+            } catch (e) {
+                resultSpan.textContent = '❌ 测试失败: ' + e.message;
+                resultSpan.className = 'test-result error';
+            } finally {
+                btn.disabled = false;
+                btn.textContent = '🔗 测试连接';
+            }
+        }
+
+        document.getElementById('settings-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            const type = document.getElementById('model_type').value;
+            
+            // 获取模型名称
+            let model;
+            if (type === 'custom') {
+                model = document.getElementById('model').value.trim();
+            } else {
+                const selectVal = document.getElementById('model_select').value;
+                model = selectVal === '__custom__' 
+                    ? document.getElementById('model').value.trim()
+                    : selectVal;
+            }
+            
+            if (!model) {
+                alert('请选择或输入模型名称');
+                return;
+            }
+            
+            const settings = {
+                interviewer_name: document.getElementById('interviewer_name').value.trim(),
+                company: document.getElementById('company').value.trim(),
+                position: document.getElementById('position').value.trim(),
+                experience: document.getElementById('experience').value,
+                interview_type: document.getElementById('interview_type').value,
+                voice_provider: document.getElementById('voice_provider').value,
+                baidu_voice: {
+                    app_id: document.getElementById('baidu_app_id').value.trim(),
+                    api_key: document.getElementById('baidu_api_key').value.trim(),
+                    secret_key: document.getElementById('baidu_secret_key').value.trim()
+                },
+                xfyun_voice: {
+                    app_id: document.getElementById('xfyun_app_id').value.trim(),
+                    api_key: document.getElementById('xfyun_api_key').value.trim(),
+                    api_secret: document.getElementById('xfyun_api_secret').value.trim()
+                },
+                model_config: {
+                    type: type,
+                    api_key: document.getElementById('api_key').value,
+                    base_url: document.getElementById('base_url').value,
+                    model: model
+                }
+            };
+            
+            try {
+                const res = await fetch('/api/settings', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(settings)
+                });
+                
+                if (res.ok) {
+                    showToast();
+                } else {
+                    alert('保存失败');
+                }
+            } catch (e) {
+                alert('保存失败: ' + e.message);
+            }
+        });
+
+        function resetForm() {
+            document.getElementById('interviewer_name').value = DEFAULT_SETTINGS.interviewer_name;
+            document.getElementById('company').value = DEFAULT_SETTINGS.company;
+            document.getElementById('position').value = DEFAULT_SETTINGS.position;
+            document.getElementById('experience').value = DEFAULT_SETTINGS.experience;
+            document.getElementById('interview_type').value = DEFAULT_SETTINGS.interview_type;
+            document.getElementById('model_type').value = DEFAULT_SETTINGS.model_type;
+            document.getElementById('api_key').value = '';
+            document.getElementById('base_url').value = DEFAULT_SETTINGS.base_url;
+            document.getElementById('model').value = DEFAULT_SETTINGS.model;
+            toggleModelFields();
+        }
+
+        function showToast() {
+            const toast = document.getElementById('save-toast');
+            toast.classList.add('show');
+            setTimeout(() => toast.classList.remove('show'), 2000);
+        }
+
+        async function testVoiceConnection() {
+            const btn = event.target;
+            const resultSpan = document.getElementById('voice-test-result');
+            const provider = document.getElementById('voice_provider').value;
+            
+            let payload = { provider };
+            
+            if (provider === 'baidu') {
+                payload.app_id = document.getElementById('baidu_app_id').value.trim();
+                payload.api_key = document.getElementById('baidu_api_key').value.trim();
+                payload.secret_key = document.getElementById('baidu_secret_key').value.trim();
+                
+                if (!payload.app_id || !payload.api_key || !payload.secret_key) {
+                    resultSpan.textContent = '❌ 请填写完整的百度语音配置';
+                    resultSpan.className = 'test-result error';
+                    return;
+                }
+            } else {
+                payload.app_id = document.getElementById('xfyun_app_id').value.trim();
+                payload.api_key = document.getElementById('xfyun_api_key').value.trim();
+                payload.api_secret = document.getElementById('xfyun_api_secret').value.trim();
+                
+                if (!payload.app_id || !payload.api_key || !payload.api_secret) {
+                    resultSpan.textContent = '❌ 请填写完整的讯飞语音配置';
+                    resultSpan.className = 'test-result error';
+                    return;
+                }
+            }
+            
+            btn.disabled = true;
+            btn.textContent = '🔄 测试中...';
+            resultSpan.textContent = '';
+            
+            try {
+                const res = await fetch('/api/voice/test', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(payload)
+                });
+                
+                const data = await res.json();
+                
+                if (data.status === 'ok') {
+                    resultSpan.textContent = '✅ 配置正确';
+                    resultSpan.className = 'test-result success';
+                } else {
+                    resultSpan.textContent = '❌ ' + data.message;
+                    resultSpan.className = 'test-result error';
+                }
+            } catch (e) {
+                resultSpan.textContent = '❌ 测试失败';
+                resultSpan.className = 'test-result error';
+            } finally {
+                btn.disabled = false;
+                btn.textContent = '🔊 测试语音识别';
+            }
+        }
+
+        // 录音测试功能
+        let voiceTestActive = false;
+        let voiceTestStream = null;
+        let voiceTestRecorder = null;
+
+        async function toggleVoiceTest() {
+            const btn = document.getElementById('voice-test-btn');
+            const resultDiv = document.getElementById('voice-test-result-text');
+            
+            if (voiceTestActive) {
+                // 停止录音
+                stopVoiceTest(btn, resultDiv);
+            } else {
+                // 开始录音
+                await startVoiceTest(btn, resultDiv);
+            }
+        }
+
+        async function startVoiceTest(btn, resultDiv) {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                voiceTestStream = stream;
+                
+                const mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus' });
+                voiceTestRecorder = mediaRecorder;
+                
+                const chunks = [];
+                mediaRecorder.ondataavailable = (e) => chunks.push(e.data);
+                
+                mediaRecorder.onstop = async () => {
+                    const webmBlob = new Blob(chunks, { type: 'audio/webm' });
+                    
+                    try {
+                        btn.textContent = '⏳ 处理中...';
+                        btn.disabled = true;
+                        resultDiv.textContent = '';
+                        
+                        // 使用AudioContext解码并重采样到16kHz
+                        const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                        const arrayBuffer = await webmBlob.arrayBuffer();
+                        const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+                        
+                        // 目标参数
+                        const targetSampleRate = 16000;
+                        const offlineCtx = new OfflineAudioContext(1, audioBuffer.duration * targetSampleRate, targetSampleRate);
+                        const source = offlineCtx.createBufferSource();
+                        source.buffer = audioBuffer;
+                        source.connect(offlineCtx.destination);
+                        source.start();
+                        
+                        const renderedBuffer = await offlineCtx.startRendering();
+                        const pcmData = renderedBuffer.getChannelData(0);
+                        
+                        // 转换为Int16
+                        const int16Array = new Int16Array(pcmData.length);
+                        for (let i = 0; i < pcmData.length; i++) {
+                            const s = Math.max(-1, Math.min(1, pcmData[i]));
+                            int16Array[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+                        }
+                        
+                        // 创建WAV
+                        const wavBlob = createWavBlob(int16Array, targetSampleRate);
+                        audioContext.close();
+                        
+                        // 发送到服务器
+                        const formData = new FormData();
+                        formData.append('audio', wavBlob, 'audio.wav');
+                        
+                        const res = await fetch('/api/voice/recognize', {
+                            method: 'POST',
+                            body: formData
+                        });
+                        
+                        const data = await res.json();
+                        
+                        if (data.error) {
+                            resultDiv.innerHTML = `<span style="color:#ef4444;">❌ ${data.error}</span>`;
+                        } else {
+                            resultDiv.innerHTML = `<span style="color:#10b981;">✅ 识别结果：</span> ${data.text || '(无结果)'}`;
+                        }
+                    } catch (e) {
+                        resultDiv.innerHTML = `<span style="color:#ef4444;">❌ 处理失败: ${e.message}</span>`;
+                    }
+                    
+                    btn.textContent = '🎤 开始录音';
+                    btn.disabled = false;
+                    voiceTestActive = false;
+                    btn.classList.remove('voice-test-active');
+                };
+                
+                mediaRecorder.start();
+                voiceTestActive = true;
+                btn.textContent = '🔴 录音中...';
+                btn.classList.add('voice-test-active');
+                resultDiv.textContent = '请说话...';
+                
+                // 5秒后自动停止
+                setTimeout(() => {
+                    if (voiceTestActive && voiceTestRecorder === mediaRecorder) {
+                        mediaRecorder.stop();
+                    }
+                }, 5000);
+                
+            } catch (e) {
+                console.error('麦克风访问失败:', e);
+                resultDiv.innerHTML = `<span style="color:#ef4444;">❌ 麦克风访问失败: ${e.message}</span>`;
+            }
+        }
+
+        function createWavBlob(pcmData, sampleRate) {
+            // 创建WAV文件头
+            const buffer = new ArrayBuffer(44 + pcmData.length * 2);
+            const view = new DataView(buffer);
+            
+            // RIFF头
+            writeString(view, 0, 'RIFF');
+            view.setUint32(4, 36 + pcmData.length * 2, true);
+            writeString(view, 8, 'WAVE');
+            
+            // fmt chunk
+            writeString(view, 12, 'fmt ');
+            view.setUint32(16, 16, true);  // chunk size
+            view.setUint16(20, 1, true);   // PCM format
+            view.setUint16(22, 1, true);   // mono
+            view.setUint32(24, sampleRate, true);
+            view.setUint32(28, sampleRate * 2, true);  // byte rate
+            view.setUint16(32, 2, true);   // block align
+            view.setUint16(34, 16, true);  // bits per sample
+            
+            // data chunk
+            writeString(view, 36, 'data');
+            view.setUint32(40, pcmData.length * 2, true);
+            
+            // 写入PCM数据
+            let offset = 44;
+            for (let i = 0; i < pcmData.length; i++) {
+                view.setInt16(offset, pcmData[i], true);
+                offset += 2;
+            }
+            
+            return new Blob([buffer], { type: 'audio/wav' });
+        }
+
+        function writeString(view, offset, string) {
+            for (let i = 0; i < string.length; i++) {
+                view.setUint8(offset + i, string.charCodeAt(i));
+            }
+        }
+
+        function stopVoiceTest(btn, resultDiv) {
+            if (voiceTestRecorder) {
+                voiceTestRecorder.stop();
+            }
+            if (voiceTestStream) {
+                voiceTestStream.getTracks().forEach(track => track.stop());
+                voiceTestStream = null;
+            }
+            voiceTestActive = false;
+        }
+    </script>
+
+    <style>
+        .test-result {
+            margin-left: 12px;
+            font-size: 13px;
+        }
+        .test-result.success { color: #10b981; }
+        .test-result.error { color: #ef4444; }
+        
+        .voice-config {
+            margin-top: 16px;
+            padding-top: 16px;
+            border-top: 1px solid #e5e7eb;
+        }
+
+        .voice-test-section {
+            margin-top: 20px;
+            padding-top: 16px;
+            border-top: 1px dashed #e5e7eb;
+        }
+
+        .voice-test-controls {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            margin-top: 12px;
+        }
+
+        .btn-voice-test {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 8px;
+            background: #4f46e5;
+            color: white;
+            cursor: pointer;
+            font-size: 14px;
+            transition: all 0.2s;
+        }
+
+        .btn-voice-test:hover {
+            background: #4338ca;
+        }
+
+        .btn-voice-test.voice-test-active {
+            background: #ef4444;
+        }
+
+        .btn-voice-test:disabled {
+            background: #d1d5db;
+            cursor: not-allowed;
+        }
+
+        .voice-test-result {
+            flex: 1;
+            font-size: 14px;
+            color: #374151;
+        }
+        
+        select {
+            width: 100%;
+            padding: 10px 14px;
+            border: 1px solid #d1d5db;
+            border-radius: 8px;
+            font-size: 14px;
+            font-family: inherit;
+            background: white;
+            cursor: pointer;
+        }
+        select:focus {
+            outline: none;
+            border-color: #4f46e5;
+        }
+    </style>
+</body>
+</html>

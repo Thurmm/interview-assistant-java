@@ -1,0 +1,29 @@
+server:
+  port: 5000
+
+spring:
+  application:
+    name: interview-assistant
+  servlet:
+    multipart:
+      max-file-size: 10MB
+      max-request-size: 10MB
+  jackson:
+    serialization:
+      write-dates-as-timestamps: false
+    default-property-inclusion: non_null
+    deserialization:
+      fail-on-unknown-properties: false
+  thymeleaf:
+    cache: false
+    mode: HTML
+    prefix: classpath:/templates/
+    suffix: .html
+
+# 数据存储目录
+app:
+  data-dir: data
+
+# 动态配置（运行时从数据库/文件读取，这里仅作默认值）
+spring.ai.openai.api-key: ${OPENAI_API_KEY:}
+spring.ai.openai.base-url: ${OPENAI_BASE_URL:https://api.openai.com/v1}
