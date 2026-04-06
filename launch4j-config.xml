@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<launch4j>
+    <headerType>gui</headerType>
+    <jar>interview-assistant-1.0.0.jar</jar>
+    <outfile>InterviewAssistant.exe</outfile>
+    <errTitle>面试助手错误</errTitle>
+    <chdir>.</chdir>
+    <priority>normal</priority>
+    <jre>
+        <path>.</path>
+        <minVersion>17.0</minVersion>
+        <maxVersion>21.0</maxVersion>
+        <jdkPreference>jdkOnly</jdkPreference>
+    </jre>
+    < Splash >
+        <splashfile></splashfile>
+    </Splash>
+    <version>
+        <info>1.0.0</info>
+    </version>
+    <text>
+        <startupErr>启动面试助手失败，请检查Java安装</startupErr>
+        <bundledJreErr>未找到Java运行环境</bundledJreErr>
+        <jreVersionErr>Java版本过低，需要17或以上</jreVersionErr>
+    </text>
+</launch4j>

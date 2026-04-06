@@ -15,21 +15,16 @@ public class SpringAiConfig {
 
     @Bean
     public OpenAiApi openAiApi() {
-        if (openAiApiKey == null || openAiApiKey.isBlank()) {
-            // Return a dummy API - actual calls will fail gracefully
-            // The app handles missing API key in service layer
-            return null;
-        }
-        return OpenAiApi.builder()
-            .apiKey(openAiApiKey)
-            .build();
+        return new OpenAiApi(openAiApiKey != null && !openAiApiKey.isBlank() ? openAiApiKey : "dummy");
     }
 
     @Bean
     public OpenAiChatModel openAiChatModel(OpenAiApi openAiApi) {
-        if (openAiApi == null) {
-            return null;
-        }
         return new OpenAiChatModel(openAiApi);
+    }
+
+    @Bean
+    public ChatClient chatClient(OpenAiChatModel chatModel) {
+        return ChatClient.builder(chatModel).build();
     }
 }

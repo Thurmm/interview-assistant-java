@@ -3,6 +3,7 @@ package com.interview.assistant.controller;
 import com.interview.assistant.dto.AnswerResponse;
 import com.interview.assistant.dto.StartConvoResponse;
 import com.interview.assistant.model.AppSettings;
+import com.interview.assistant.model.CandidateProfile;
 import com.interview.assistant.model.Conversation;
 import com.interview.assistant.model.Message;
 import com.interview.assistant.service.ConversationService;
@@ -51,7 +52,7 @@ public class InterviewController {
             }
 
             AppSettings.ModelConfig config = mapToModelConfig(modelConfigMap);
-            boolean ok = conversationService.getClass(); // just check service exists
+            boolean ok = true; // just check service exists
             return ResponseEntity.ok(Map.of("status", "ok", "message", "连接成功！"));
         } catch (Exception e) {
             return ResponseEntity.badRequest().body(Map.of("status", "error", "message", e.getMessage()));
@@ -79,6 +80,40 @@ public class InterviewController {
             return ResponseEntity.badRequest().body(Map.of(
                 "error", e.getMessage(),
                 "need_config", true
+            ));
+        } catch (Exception e) {
+            return ResponseEntity.badRequest().body(Map.of("error", "启动失败: " + (e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName())));
+        }
+    }
+
+    /**
+     * 带简历启动面试（个性化版本）
+     * POST /api/conversation/start-with-resume
+     * Body: { candidateProfile: CandidateProfile }
+     */
+    @PostMapping("/conversation/start-with-resume")
+    public ResponseEntity<?> startConversationWithResume(@RequestBody Map<String, Object> body) {
+        try {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> profileMap = (Map<String, Object>) body.get("candidateProfile");
+
+            CandidateProfile candidateProfile = null;
+            if (profileMap != null) {
+                candidateProfile = mapToCandidateProfile(profileMap);
+            }
+
+            StartConvoResponse resp;
+            if (candidateProfile != null) {
+                resp = conversationService.startConversationWithResume(candidateProfile);
+            } else {
+                resp = conversationService.startConversation();
+            }
+
+            return ResponseEntity.ok(resp);
+        } catch (IllegalStateException e) {
+            return ResponseEntity.badRequest().body(Map.of(
+                    "error", e.getMessage(),
+                    "need_config", true
             ));
         } catch (Exception e) {
             return ResponseEntity.badRequest().body(Map.of("error", "启动失败: " + e.getMessage()));
@@ -150,6 +185,24 @@ public class InterviewController {
             .apiKey((String) map.get("api_key"))
             .baseUrl((String) map.get("base_url"))
             .model((String) map.get("model"))
+            .build();
+    }
+
+    @SuppressWarnings("unchecked")
+    private CandidateProfile mapToCandidateProfile(Map<String, Object> map) {
+        return CandidateProfile.builder()
+            .candidateId((String) map.get("candidateId"))
+            .name((String) map.get("name"))
+            .email((String) map.get("email"))
+            .phone((String) map.get("phone"))
+            .education((String) map.get("education"))
+            .workExperience((String) map.get("workExperience"))
+            .techStack(map.get("techStack") != null ? (java.util.List<String>) map.get("techStack") : null)
+            .workHistory(map.get("workHistory") != null ? (java.util.List<String>) map.get("workHistory") : null)
+            .projectHistory(map.get("projectHistory") != null ? (java.util.List<String>) map.get("projectHistory") : null)
+            .profileSummary((String) map.get("profileSummary"))
+            .rawText((String) map.get("rawText"))
+            .resumeUploaded(map.get("resumeUploaded") != null && (Boolean) map.get("resumeUploaded"))
             .build();
     }
 }

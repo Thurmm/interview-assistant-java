@@ -22,4 +22,10 @@ public class Conversation {
     private List<Message> messages;
     private Integer currentQuestionIndex;
     private String status;  // in_progress, completed, stopped
+
+    /** 候选人画像（由 ResumeAgent 生成） */
+    private CandidateProfile candidateProfile;
+
+    /** 当前面试阶段（Opening → Technical → Behavioral → DeepDive → WrapUp） */
+    private String interviewPhase;
 }

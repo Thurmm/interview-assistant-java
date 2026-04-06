@@ -26,5 +26,19 @@ public class AnswerResponse {
         private Integer score;
         private String feedback;
         private String modelAnswer;
+        /** 分维度评分（V2 新增） */
+        private DimensionScores dimensionScores;
+    }
+
+    /** 分维度评分 */
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class DimensionScores {
+        private Integer technicalDepth;    // 技术深度 0-10
+        private Integer expressionClarity; // 表达清晰度 0-10
+        private Integer logicCoherence;    // 逻辑连贯性 0-10
+        private Integer experienceRelevance; // 经验相关性 0-10
     }
 }

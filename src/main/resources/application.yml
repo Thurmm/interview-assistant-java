@@ -16,14 +16,27 @@ spring:
       fail-on-unknown-properties: false
   thymeleaf:
     cache: false
-    mode: HTML
-    prefix: classpath:/templates/
-    suffix: .html
+
+  # Spring AI 配置
+  ai:
+    openai:
+      api-key: dummy-key-for-startup
+      base-url: https://api.minimax.chat/v1
+    embedding:
+      api-key: dummy-key-for-startup
+
+    # Qdrant 向量数据库配置（可选，不配置则不使用 RAG）
+    # 启动 Qdrant: docker run -d --name qdrant -p 6333:6333 -p 6334:6334 qdrant/qdrant
+    vectorstore:
+      qdrant:
+        host: localhost
+        port: 6334
+        collection: interview_resumes
+        # 可选：Qdrant 的 gRPC 端口（6334 用于 HTTP，6335 用于 gRPC）
+        # grpc-port: 6335
+        # 是否使用嵌入式 Qdrant（仅测试用，生产建议用 Docker）
+        # use-embedded: false
 
 # 数据存储目录
 app:
   data-dir: data
-
-# 动态配置（运行时从数据库/文件读取，这里仅作默认值）
-spring.ai.openai.api-key: ${OPENAI_API_KEY:}
-spring.ai.openai.base-url: ${OPENAI_BASE_URL:https://api.openai.com/v1}

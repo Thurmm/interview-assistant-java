@@ -1,13 +1,15 @@
 package com.interview.assistant.service;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.interview.assistant.agent.EvaluatorAgent;
+import com.interview.assistant.agent.InterviewerAgent;
+import com.interview.assistant.agent.InterviewerAgent.InterviewPhase;
 import com.interview.assistant.dto.AnswerResponse;
 import com.interview.assistant.dto.StartConvoResponse;
 import com.interview.assistant.model.AppSettings;
 import com.interview.assistant.model.AppSettings.ModelConfig;
+import com.interview.assistant.model.CandidateProfile;
 import com.interview.assistant.model.Conversation;
 import com.interview.assistant.model.Message;
 import com.interview.assistant.util.JsonFileUtil;
@@ -18,10 +20,16 @@ import org.springframework.stereotype.Service;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
+/**
+ * 对话服务（V2 重构：接入 Multi-Agent）
+ *
+ * 职责：
+ * - 管理面试会话生命周期
+ * - 协调 InterviewerAgent / EvaluatorAgent / VectorStoreService
+ * - 持久化会话数据（JSON 文件）
+ */
 @Slf4j
 @Service
 @RequiredArgsConstructor
@@ -31,8 +39,12 @@ public class ConversationService {
     private static final DateTimeFormatter DTF = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
 
     private final JsonFileUtil jsonFileUtil;
-    private final LlmService llmService;
     private final SettingsService settingsService;
+    private final InterviewerAgent interviewerAgent;
+    private final EvaluatorAgent evaluatorAgent;
+    private final VectorStoreService vectorStoreService;
+
+    // ============ 对话查询 ============
 
     public List<Conversation> getAllConversations() {
         return jsonFileUtil.readJson(CONVOS_FILE, List.class, List.of());
@@ -40,11 +52,29 @@ public class ConversationService {
 
     public Optional<Conversation> getConversation(String id) {
         return getAllConversations().stream()
-            .filter(c -> id.equals(c.getId()))
-            .findFirst();
+                .filter(c -> id.equals(c.getId()))
+                .findFirst();
     }
 
+    // ============ 开始面试 ============
+
+    /**
+     * 开始新面试（无简历版本）
+     */
     public StartConvoResponse startConversation() {
+        return startConversationInternal(null);
+    }
+
+    /**
+     * 开始新面试（带简历版本 — 个性化面试）
+     *
+     * @param candidateProfile 简历解析出的候选人画像（可选）
+     */
+    public StartConvoResponse startConversationWithResume(CandidateProfile candidateProfile) {
+        return startConversationInternal(candidateProfile);
+    }
+
+    private StartConvoResponse startConversationInternal(CandidateProfile candidateProfile) {
         AppSettings settings = settingsService.getSettings();
         ModelConfig modelConfig = settings.getModelConfig();
 
@@ -58,124 +88,192 @@ public class ConversationService {
         String interviewerName = settings.getInterviewerName() != null ? settings.getInterviewerName() : "面试官";
         String company = settings.getCompany() != null ? settings.getCompany() : "";
         String position = settings.getPosition() != null ? settings.getPosition() : "";
+        String experience = settings.getExperience() != null ? settings.getExperience() : "";
 
-        String welcome = String.format("你好，欢迎来到%s！我是%s，今天我们将进行%s岗位的面试。准备好了吗？我们开始吧。",
-            company, interviewerName, position);
+        String welcome;
+        if (candidateProfile != null && candidateProfile.getName() != null && !candidateProfile.getName().isBlank()) {
+            welcome = String.format("你好，%s！欢迎来到%s！我是%s，今天我们将进行%s岗位的面试。准备好了吗？我们开始吧。",
+                    candidateProfile.getName(), company, interviewerName, position);
+        } else {
+            welcome = String.format("你好，欢迎来到%s！我是%s，今天我们将进行%s岗位的面试。准备好了吗？我们开始吧。",
+                    company, interviewerName, position);
+        }
 
         Map<String, Object> settingsMap = new HashMap<>();
         settingsMap.put("company", company);
         settingsMap.put("position", position);
-        settingsMap.put("experience", settings.getExperience());
+        settingsMap.put("experience", experience);
         settingsMap.put("interviewType", settings.getInterviewType());
         settingsMap.put("interviewerName", interviewerName);
         settingsMap.put("modelConfig", modelConfig);
 
         List<Message> messages = new ArrayList<>();
         messages.add(Message.builder()
-            .role("interviewer")
-            .content(welcome)
-            .timestamp(now)
-            .build());
+                .role("interviewer")
+                .content(welcome)
+                .timestamp(now)
+                .build());
 
-        Conversation convo = Conversation.builder()
-            .id(convoId)
-            .createdAt(now)
-            .updatedAt(now)
-            .settings(settingsMap)
-            .messages(messages)
-            .currentQuestionIndex(0)
-            .status("in_progress")
-            .build();
+        // 构建候选人画像描述（供 Agent 使用）
+        String profileSummary = buildProfileSummary(candidateProfile, position, experience);
 
-        // 生成第一个问题
-        String firstQuestion = generateInterviewQuestion(convo, modelConfig);
+        // 生成第一道问题（使用 InterviewerAgent）
+        String firstQuestion = interviewerAgent.generateQuestion(
+                profileSummary,
+                position,
+                experience,
+                InterviewPhase.OPENING,
+                1,
+                messages,
+                modelConfig
+        );
+
         String now2 = LocalDateTime.now().format(DTF);
         messages.add(Message.builder()
-            .role("interviewer")
-            .content(firstQuestion)
-            .timestamp(now2)
-            .isQuestion(true)
-            .build());
-        convo.setCurrentQuestionIndex(1);
-        convo.setUpdatedAt(now2);
+                .role("interviewer")
+                .content(firstQuestion)
+                .timestamp(now2)
+                .isQuestion(true)
+                .build());
 
-        // 保存
-        List<Conversation> convos = getAllConversations();
+        Conversation convo = Conversation.builder()
+                .id(convoId)
+                .createdAt(now)
+                .updatedAt(now2)
+                .settings(settingsMap)
+                .messages(messages)
+                .currentQuestionIndex(1)
+                .status("in_progress")
+                .candidateProfile(candidateProfile)
+                .interviewPhase(InterviewPhase.OPENING.name())
+                .build();
+
+        // 持久化
+        List<Conversation> convos = new ArrayList<>(getAllConversations());
         convos.add(0, convo);
         saveConversations(convos);
 
         return StartConvoResponse.builder()
-            .convoId(convoId)
-            .welcome(welcome)
-            .firstQuestion(firstQuestion)
-            .convo(convo)
-            .build();
+                .convoId(convoId)
+                .welcome(welcome)
+                .firstQuestion(firstQuestion)
+                .convo(convo)
+                .build();
     }
 
+    // ============ 回答处理 ============
+
+    /**
+     * 处理用户回答
+     *
+     * 流程：
+     * 1. 用 EvaluatorAgent 评分（含 RAG 检索参考答案）
+     * 2. 判断是否结束（InterviewerAgent）
+     * 3. 生成下一题（InterviewerAgent）
+     */
     public AnswerResponse answer(String convoId, String userAnswer) {
         Conversation convo = getConversation(convoId)
-            .orElseThrow(() -> new IllegalArgumentException("对话不存在"));
+                .orElseThrow(() -> new IllegalArgumentException("对话不存在"));
 
         ModelConfig modelConfig = extractModelConfig(convo);
         String now = LocalDateTime.now().format(DTF);
 
         // 获取当前问题
         String currentQuestion = convo.getMessages().stream()
-            .filter(m -> Boolean.TRUE.equals(m.getIsQuestion()))
-            .reduce((first, second) -> second)
-            .map(Message::getContent)
-            .orElse("");
+                .filter(m -> Boolean.TRUE.equals(m.getIsQuestion()))
+                .reduce((first, second) -> second)
+                .map(Message::getContent)
+                .orElse("");
 
-        // 评估回答
-        AnswerResponse.EvaluationResult evaluation = evaluateAnswer(currentQuestion, userAnswer, convo, modelConfig);
+        // ===== 评分（使用 EvaluatorAgent + RAG）=====
+        String candidateProfile = buildProfileSummary(convo.getCandidateProfile(),
+                getSetting(convo, "position", "软件工程师"),
+                getSetting(convo, "experience", ""));
 
-        // 添加用户回答
+        // RAG 检索参考答案（如果向量库已配置）
+        String retrievedContext = "";
+        if (vectorStoreService.isAvailable()) {
+            try {
+                retrievedContext = vectorStoreService.retrieveReferenceAnswer(currentQuestion, 2);
+            } catch (Exception e) {
+                log.warn("RAG 检索失败，不影响主流程: {}", e.getMessage());
+            }
+        }
+
+        EvaluatorAgent.EvaluationResult evalResult = evaluatorAgent.evaluate(
+                currentQuestion,
+                userAnswer,
+                modelConfig,
+                candidateProfile,
+                retrievedContext
+        );
+
+        // 添加用户回答消息
         convo.getMessages().add(Message.builder()
-            .role("user")
-            .content(userAnswer)
-            .timestamp(now)
-            .score(evaluation.getScore())
-            .feedback(evaluation.getFeedback())
-            .modelAnswer(evaluation.getModelAnswer())
-            .build());
+                .role("user")
+                .content(userAnswer)
+                .timestamp(now)
+                .score(evalResult.score())
+                .feedback(evalResult.feedback())
+                .modelAnswer(evalResult.modelAnswer())
+                .build());
 
-        boolean shouldEnd = shouldEndInterview(convo, modelConfig);
+        // 更新面试阶段
+        int questionCount = convo.getCurrentQuestionIndex() != null ? convo.getCurrentQuestionIndex() : 0;
+        InterviewPhase currentPhase = parsePhase(convo.getInterviewPhase());
+        InterviewPhase nextPhase = interviewerAgent.nextPhase(currentPhase, questionCount + 1);
+        convo.setInterviewPhase(nextPhase.name());
+
+        // ===== 判断是否结束 =====
+        boolean shouldEnd = interviewerAgent.shouldEndInterview(
+                convo.getMessages(),
+                getSetting(convo, "position", "软件工程师"),
+                questionCount,
+                modelConfig
+        );
+
+        String nextQuestion = null;
 
         if (shouldEnd) {
-            String closing = generateClosingMessage(convo, modelConfig);
+            // 生成结束语
+            String closing = interviewerAgent.generateClosingMessage(
+                    getSetting(convo, "position", ""),
+                    getSetting(convo, "company", ""),
+                    modelConfig
+            );
             convo.getMessages().add(Message.builder()
-                .role("interviewer")
-                .content(closing)
-                .timestamp(LocalDateTime.now().format(DTF))
-                .build());
+                    .role("interviewer")
+                    .content(closing)
+                    .timestamp(LocalDateTime.now().format(DTF))
+                    .build());
             convo.setStatus("completed");
+            log.info("面试 [{}] 已结束", convoId);
         } else {
-            String nextQuestion = generateInterviewQuestion(convo, modelConfig);
+            // 生成下一题
+            nextQuestion = interviewerAgent.generateQuestion(
+                    candidateProfile,
+                    getSetting(convo, "position", "软件工程师"),
+                    getSetting(convo, "experience", ""),
+                    nextPhase,
+                    questionCount + 1,
+                    convo.getMessages(),
+                    modelConfig
+            );
+
             convo.getMessages().add(Message.builder()
-                .role("interviewer")
-                .content(nextQuestion)
-                .timestamp(LocalDateTime.now().format(DTF))
-                .isQuestion(true)
-                .build());
-            convo.setCurrentQuestionIndex(convo.getCurrentQuestionIndex() + 1);
+                    .role("interviewer")
+                    .content(nextQuestion)
+                    .timestamp(LocalDateTime.now().format(DTF))
+                    .isQuestion(true)
+                    .build());
+
+            convo.setCurrentQuestionIndex(questionCount + 1);
         }
 
         convo.setUpdatedAt(LocalDateTime.now().format(DTF));
 
-        // 找到下一个问题
-        String nextQ = null;
-        if (!"completed".equals(convo.getStatus())) {
-            List<Message> msgs = convo.getMessages();
-            for (int i = msgs.size() - 2; i >= 0; i--) {
-                if (Boolean.TRUE.equals(msgs.get(i).getIsQuestion())) {
-                    nextQ = msgs.get(i).getContent();
-                    break;
-                }
-            }
-        }
-
-        // 保存
-        List<Conversation> convos = getAllConversations();
+        // 持久化
+        List<Conversation> convos = new ArrayList<>(getAllConversations());
         for (int i = 0; i < convos.size(); i++) {
             if (convos.get(i).getId().equals(convoId)) {
                 convos.set(i, convo);
@@ -184,13 +282,30 @@ public class ConversationService {
         }
         saveConversations(convos);
 
+        // 构建返回（含分维度评分）
+        AnswerResponse.DimensionScores dimScores = AnswerResponse.DimensionScores.builder()
+                .technicalDepth(evalResult.dimensionScores().technicalDepth())
+                .expressionClarity(evalResult.dimensionScores().expressionClarity())
+                .logicCoherence(evalResult.dimensionScores().logicCoherence())
+                .experienceRelevance(evalResult.dimensionScores().experienceRelevance())
+                .build();
+
+        AnswerResponse.EvaluationResult dtoEval = AnswerResponse.EvaluationResult.builder()
+                .score(evalResult.score())
+                .feedback(evalResult.feedback())
+                .modelAnswer(evalResult.modelAnswer())
+                .dimensionScores(dimScores)
+                .build();
+
         return AnswerResponse.builder()
-            .evaluation(evaluation)
-            .nextQuestion(nextQ)
-            .isFinished("completed".equals(convo.getStatus()))
-            .messages(convo.getMessages())
-            .build();
+                .evaluation(dtoEval)
+                .nextQuestion(nextQuestion)
+                .isFinished("completed".equals(convo.getStatus()))
+                .messages(convo.getMessages())
+                .build();
     }
+
+    // ============ 会话控制 ============
 
     public void stopConversation(String convoId, List<Message> messages, String status) {
         List<Conversation> convos = getAllConversations();
@@ -207,187 +322,58 @@ public class ConversationService {
 
     public void deleteConversation(String convoId) {
         List<Conversation> convos = getAllConversations();
-        convos = convos.stream()
-            .filter(c -> !c.getId().equals(convoId))
-            .collect(Collectors.toList());
-        saveConversations(convos);
-    }
-
-    private String generateInterviewQuestion(Conversation convo, ModelConfig modelConfig) {
-        String position = getSetting(convo, "position", "软件工程师");
-        String experience = getSetting(convo, "experience", "");
-        int questionIndex = convo.getCurrentQuestionIndex();
-
-        String prompt = String.format("""
-            你是一位专业的面试官，正在面试一位应聘%s岗位（要求%s经验）的候选人。
-            这是第%d道问题。
-
-            请根据面试进度问一个合适的面试问题。
-            要求：
-            1. 如果是开场，问一些基础但重要的问题（如自我介绍、项目经验）
-            2. 随着面试深入，问题应该逐渐深入技术细节
-            3. 问题要具体、有深度，能真正考察候选人的能力
-            4. 只输出问题本身，不要加前缀说明
-            """, position, experience, questionIndex + 1);
-
-        LlmService.LlmResult result = llmService.callLlm(
-            List.of(
-                Map.of("role", "system", "content", "你是一位专业、友善的面试官。"),
-                Map.of("role", "user", "content", prompt)
-            ),
-            modelConfig, 0.7, 500
-        );
-
-        if (result.error() != null) {
-            return "抱歉，生成问题时遇到了点问题，请稍后重试。";
-        }
-
-        return cleanJsonWrapper(result.content());
-    }
-
-    private AnswerResponse.EvaluationResult evaluateAnswer(String question, String answer, Conversation convo, ModelConfig modelConfig) {
-        if (answer == null || answer.isBlank()) {
-            return AnswerResponse.EvaluationResult.builder()
-                .score(0)
-                .feedback("未检测到有效回答")
-                .modelAnswer("请提供一个有效的回答")
-                .build();
-        }
-
-        String position = getSetting(convo, "position", "软件工程师");
-        String experience = getSetting(convo, "experience", "");
-
-        String prompt = String.format("""
-            你是一位专业的面试官，正在评估一位应聘%s岗位（要求%s经验）的候选人的回答。
-
-            面试问题：%s
-
-            候选人的回答：%s
-
-            请从以下几个维度评估回答：
-            1. 回答的完整性和相关性
-            2. 展现的专业能力和经验
-            3. 表达的逻辑性和清晰度
-            4. 回答的深度和洞察力
-
-            请用JSON格式回复，包含以下字段：
-            - score: 0-10的整数评分
-            - feedback: 简短的评价反馈（1-2句话）
-            - model_answer: 一个更好的回答范例（2-3句话）
-
-            只返回JSON，不要其他内容。
-            """, position, experience, question, answer);
-
-        LlmService.LlmResult result = llmService.callLlm(
-            List.of(
-                Map.of("role", "system", "content", "你是一位专业的面试官评估专家。评估要客观公正。"),
-                Map.of("role", "user", "content", prompt)
-            ),
-            modelConfig, 0.3, 1000
-        );
-
-        if (result.error() != null) {
-            return AnswerResponse.EvaluationResult.builder()
-                .score(5)
-                .feedback("回答已记录")
-                .modelAnswer("建议从实际项目经验出发，结合具体案例来回答会更好。")
-                .build();
-        }
-
-        try {
-            String jsonStr = cleanJsonWrapper(result.content());
-            ObjectMapper mapper = new ObjectMapper();
-            JsonNode node = mapper.readTree(jsonStr);
-
-            int score = node.has("score") ? node.get("score").asInt() : 5;
-            score = Math.max(0, Math.min(10, score));
-
-            return AnswerResponse.EvaluationResult.builder()
-                .score(score)
-                .feedback(node.has("feedback") ? node.get("feedback").asText() : "回答已记录")
-                .modelAnswer(node.has("model_answer") ? node.get("model_answer").asText() : "建议从实际项目经验出发。")
-                .build();
-        } catch (Exception e) {
-            log.error("解析评估结果失败: {}", result.content(), e);
-            return AnswerResponse.EvaluationResult.builder()
-                .score(5)
-                .feedback("回答已记录")
-                .modelAnswer("建议从实际项目经验出发，结合具体案例来回答会更好。")
-                .build();
-        }
-    }
-
-    private boolean shouldEndInterview(Conversation convo, ModelConfig modelConfig) {
-        int questionCount = convo.getCurrentQuestionIndex() != null ? convo.getCurrentQuestionIndex() : 0;
-
-        if (questionCount >= 10) {
-            return true;
-        }
-
-        if (questionCount < 3) {
-            return false;
-        }
-
-        String position = getSetting(convo, "position", "软件工程师");
-        StringBuilder history = new StringBuilder();
-        int qCount = 0;
-        for (Message msg : convo.getMessages()) {
-            if (Boolean.TRUE.equals(msg.getIsQuestion())) {
-                qCount++;
-                history.append(String.format("Q%d: %s%n", qCount, msg.getContent()));
-            } else if ("user".equals(msg.getRole())) {
-                history.append(String.format("回答: %s%n", msg.getContent().substring(0, Math.min(100, msg.getContent().length()))));
+        // 删除向量数据（如果向量库已配置）
+        if (vectorStoreService.isAvailable()) {
+            try {
+                vectorStoreService.deleteResume(convoId);
+            } catch (Exception e) {
+                log.warn("删除向量数据失败: {}", convoId);
             }
         }
 
-        String prompt = String.format("""
-            这是一个%s岗位的面试，目前问了%d个问题。
-
-            面试摘要：
-            %s
-
-            基于这个对话，你觉得面试是否已经充分评估了候选人？
-            请回答"结束"或"继续"，不要加其他内容。
-            """, position, questionCount, history);
-
-        LlmService.LlmResult result = llmService.callLlm(
-            List.of(
-                Map.of("role", "system", "content", "你是一位专业的面试官。"),
-                Map.of("role", "user", "content", prompt)
-            ),
-            modelConfig, 0.1, 50
-        );
-
-        String content = result.content() != null ? result.content().trim().toLowerCase() : "";
-        return content.contains("结束");
+        convos = convos.stream()
+                .filter(c -> !c.getId().equals(convoId))
+                .collect(Collectors.toList());
+        saveConversations(convos);
     }
 
-    private String generateClosingMessage(Conversation convo, ModelConfig modelConfig) {
-        String position = getSetting(convo, "position", "");
-        String company = getSetting(convo, "company", "");
+    // ============ 工具方法 ============
 
-        String prompt = String.format("""
-                作为%s的面试官，请为一位应聘%s岗位的面试生成一段简短的结束语。
+    private String buildProfileSummary(CandidateProfile profile, String position, String experience) {
+        if (profile == null) {
+            return String.format("应聘 %s 岗位（要求 %s 经验），暂无简历信息。",
+                    position, experience);
+        }
 
-                要求：
-                1. 感谢候选人的参与
-                2. 告知面试结束
-                3. 说明后续流程
-                4. 保持专业和友善
+        StringBuilder sb = new StringBuilder();
+        sb.append("姓名: ").append(profile.getName() != null ? profile.getName() : "未知").append("\n");
 
-                直接输出结束语，不要加前缀。
-                """, company, position);
+        if (profile.getEducation() != null && !profile.getEducation().isBlank()) {
+            sb.append("学历: ").append(profile.getEducation()).append("\n");
+        }
+        if (profile.getWorkExperience() != null && !profile.getWorkExperience().isBlank()) {
+            sb.append("工作年限: ").append(profile.getWorkExperience()).append("\n");
+        }
 
-        LlmService.LlmResult result = llmService.callLlm(
-            List.of(
-                Map.of("role", "system", "content", "你是一位专业、友善的面试官。"),
-                Map.of("role", "user", "content", prompt)
-            ),
-            modelConfig, 0.7, 300
-        );
+        if (profile.getTechStack() != null && !profile.getTechStack().isEmpty()) {
+            sb.append("技术栈: ").append(String.join(" / ", profile.getTechStack())).append("\n");
+        }
 
-        return result.content() != null ? result.content().trim()
-            : "非常感谢你的参与，今天的面试到此结束。我们会在一周内通知你结果。祝你好运！";
+        if (profile.getWorkHistory() != null && !profile.getWorkHistory().isEmpty()) {
+            sb.append("工作经历:\n");
+            profile.getWorkHistory().forEach(w -> sb.append("  - ").append(w).append("\n"));
+        }
+
+        if (profile.getProjectHistory() != null && !profile.getProjectHistory().isEmpty()) {
+            sb.append("项目经历:\n");
+            profile.getProjectHistory().forEach(p -> sb.append("  - ").append(p).append("\n"));
+        }
+
+        if (profile.getProfileSummary() != null && !profile.getProfileSummary().isBlank()) {
+            sb.append("整体画像: ").append(profile.getProfileSummary());
+        }
+
+        return sb.toString();
     }
 
     private ModelConfig extractModelConfig(Conversation convo) {
@@ -400,7 +386,7 @@ public class ConversationService {
             String json = mapper.writeValueAsString(modelConfigObj);
             return mapper.readValue(json, ModelConfig.class);
         } catch (JsonProcessingException e) {
-            log.error("解析modelConfig失败", e);
+            log.error("解析 modelConfig 失败", e);
             return ModelConfig.builder().type("openai").build();
         }
     }
@@ -410,26 +396,19 @@ public class ConversationService {
         return val != null ? val.toString() : defaultValue;
     }
 
-    private String cleanJsonWrapper(String content) {
-        if (content == null) return "";
-        String trimmed = content.trim();
-        // Remove markdown code blocks
-        if (trimmed.startsWith("```json")) {
-            trimmed = trimmed.substring(7);
-        } else if (trimmed.startsWith("```")) {
-            trimmed = trimmed.substring(3);
+    private InterviewPhase parsePhase(String phase) {
+        try {
+            return InterviewPhase.valueOf(phase);
+        } catch (Exception e) {
+            return InterviewPhase.OPENING;
         }
-        if (trimmed.endsWith("```")) {
-            trimmed = trimmed.substring(0, trimmed.length() - 3);
-        }
-        return trimmed.trim();
     }
 
+    @SuppressWarnings("unchecked")
     private void saveConversations(List<Conversation> convos) {
-        // Convert to a generic list for JSON serialization
         List<Map<String, Object>> data = convos.stream()
-            .map(this::toMap)
-            .collect(Collectors.toList());
+                .map(this::toMap)
+                .collect(Collectors.toList());
         jsonFileUtil.writeJson(CONVOS_FILE, data);
     }
 
@@ -443,6 +422,8 @@ public class ConversationService {
         map.put("messages", c.getMessages());
         map.put("currentQuestionIndex", c.getCurrentQuestionIndex());
         map.put("status", c.getStatus());
+        map.put("candidateProfile", c.getCandidateProfile());
+        map.put("interviewPhase", c.getInterviewPhase());
         return map;
     }
 }
