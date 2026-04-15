@@ -7,9 +7,11 @@ import com.interview.assistant.model.CandidateProfile;
 import com.interview.assistant.model.Conversation;
 import com.interview.assistant.model.Message;
 import com.interview.assistant.service.ConversationService;
+import com.interview.assistant.service.LlmService;
 import com.interview.assistant.service.ReportService;
 import com.interview.assistant.service.SettingsService;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -21,6 +23,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 
+@Slf4j
 @RestController
 @RequestMapping("/api")
 @RequiredArgsConstructor
@@ -30,6 +33,7 @@ public class InterviewController {
     private final ConversationService conversationService;
     private final SettingsService settingsService;
     private final ReportService reportService;
+    private final LlmService llmService;
 
     @GetMapping("/settings")
     public ResponseEntity<AppSettings> getSettings() {
@@ -45,6 +49,10 @@ public class InterviewController {
     @PostMapping("/model/test")
     public ResponseEntity<Map<String, String>> testModel(@RequestBody Map<String, Object> body) {
         try {
+            if (body == null) {
+                return ResponseEntity.badRequest().body(Map.of("status", "error", "message", "请求体不能为空"));
+            }
+            
             @SuppressWarnings("unchecked")
             Map<String, Object> modelConfigMap = (Map<String, Object>) body.get("model_config");
             if (modelConfigMap == null) {
@@ -52,9 +60,14 @@ public class InterviewController {
             }
 
             AppSettings.ModelConfig config = mapToModelConfig(modelConfigMap);
-            boolean ok = true; // just check service exists
-            return ResponseEntity.ok(Map.of("status", "ok", "message", "连接成功！"));
+            boolean ok = llmService.testConnection(config);
+            if (ok) {
+                return ResponseEntity.ok(Map.of("status", "ok", "message", "连接成功！"));
+            } else {
+                return ResponseEntity.badRequest().body(Map.of("status", "error", "message", "连接失败，请检查配置"));
+            }
         } catch (Exception e) {
+            log.error("模型测试失败: {}", e.getMessage(), e);
             return ResponseEntity.badRequest().body(Map.of("status", "error", "message", e.getMessage()));
         }
     }
@@ -94,6 +107,13 @@ public class InterviewController {
     @PostMapping("/conversation/start-with-resume")
     public ResponseEntity<?> startConversationWithResume(@RequestBody Map<String, Object> body) {
         try {
+            if (body == null) {
+                return ResponseEntity.badRequest().body(Map.of(
+                        "error", "请求体不能为空",
+                        "code", 400
+                ));
+            }
+
             @SuppressWarnings("unchecked")
             Map<String, Object> profileMap = (Map<String, Object>) body.get("candidateProfile");
 
@@ -113,23 +133,51 @@ public class InterviewController {
         } catch (IllegalStateException e) {
             return ResponseEntity.badRequest().body(Map.of(
                     "error", e.getMessage(),
-                    "need_config", true
+                    "need_config", true,
+                    "code", 400
             ));
         } catch (Exception e) {
-            return ResponseEntity.badRequest().body(Map.of("error", "启动失败: " + e.getMessage()));
+            log.error("启动面试失败: {}", e.getMessage(), e);
+            return ResponseEntity.badRequest().body(Map.of(
+                    "error", "启动失败: " + e.getMessage(),
+                    "code", 400
+            ));
         }
     }
 
     @PostMapping("/conversation/{id}/answer")
     public ResponseEntity<?> answer(@PathVariable String id, @RequestBody Map<String, String> body) {
         try {
+            if (id == null || id.isBlank()) {
+                return ResponseEntity.badRequest().body(Map.of(
+                        "error", "对话ID不能为空",
+                        "code", 400
+                ));
+            }
+            if (body == null) {
+                return ResponseEntity.badRequest().body(Map.of(
+                        "error", "请求体不能为空",
+                        "code", 400
+                ));
+            }
             String answer = body.get("answer");
+            if (answer == null || answer.isBlank()) {
+                return ResponseEntity.badRequest().body(Map.of(
+                        "error", "回答内容不能为空",
+                        "code", 400
+                ));
+            }
             AnswerResponse resp = conversationService.answer(id, answer);
             return ResponseEntity.ok(resp);
         } catch (IllegalArgumentException e) {
+            log.warn("对话不存在: {}", id);
             return ResponseEntity.notFound().build();
         } catch (Exception e) {
-            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+            log.error("处理回答失败: {}", e.getMessage(), e);
+            return ResponseEntity.badRequest().body(Map.of(
+                    "error", e.getMessage(),
+                    "code", 400
+            ));
         }
     }
 

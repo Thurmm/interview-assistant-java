@@ -1,5 +1,6 @@
 package com.interview.assistant.config;
 
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.web.servlet.config.annotation.ResourceHandlerRegistry;
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
@@ -13,6 +14,7 @@ import java.nio.file.Paths;
  * 使用外部 static 目录而非 classpath，
  * 解决 Spring Boot fat JAR 内置资源在某些环境下的路径问题。
  */
+@Slf4j
 @Configuration
 public class WebConfig implements WebMvcConfigurer {
 
@@ -35,16 +37,16 @@ public class WebConfig implements WebMvcConfigurer {
                 .addResourceLocations(staticPath)
                 .setCachePeriod(0);
 
-        System.out.println("[WebConfig] Static resources from: " + staticPath);
+        log.info("[WebConfig] Static resources from: {}", staticPath);
 
         // 验证目录存在
         File dir = new File(staticPath.replace("file:", ""));
         if (!dir.exists()) {
-            System.out.println("[WebConfig] WARNING: Static dir not found at " + dir.getAbsolutePath());
+            log.warn("[WebConfig] WARNING: Static dir not found at {}", dir.getAbsolutePath());
         } else {
-            System.out.println("[WebConfig] Static dir exists, listing:");
+            log.info("[WebConfig] Static dir exists, listing:");
             for (File f : dir.listFiles()) {
-                System.out.println("  " + f.getName());
+                log.info("  {}", f.getName());
             }
         }
     }

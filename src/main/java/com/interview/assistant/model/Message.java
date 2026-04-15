@@ -1,6 +1,7 @@
 package com.interview.assistant.model;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -18,5 +19,6 @@ public class Message {
     private Boolean isQuestion;
     private Integer score;
     private String feedback;
+    @JsonProperty("model_answer")
     private String modelAnswer;
 }

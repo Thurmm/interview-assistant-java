@@ -2,8 +2,9 @@ package com.interview.assistant.agent;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.interview.assistant.model.AppSettings;
 import com.interview.assistant.config.QdrantConfig;
-import com.interview.assistant.model.AppSettings.ModelConfig;
+import com.interview.assistant.service.LlmService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -39,7 +40,7 @@ public class EvaluatorAgent {
     public EvaluationResult evaluate(
             String question,
             String answer,
-            ModelConfig modelConfig,
+            AppSettings.ModelConfig modelConfig,
             String candidateProfile,
             String retrievedContext
     ) {
@@ -58,7 +59,7 @@ public class EvaluatorAgent {
                 modelConfig.getApiKey(),
                 modelConfig.getBaseUrl(),
                 modelConfig.getModel(),
-                0.3
+                0.7
         );
 
         if (result == null) {
@@ -108,8 +109,28 @@ public class EvaluatorAgent {
     }
 
     private EvaluationResult parseEvaluationResult(String content) {
+        if (content == null || content.isBlank()) {
+            log.warn("评估内容为空，返回默认结果");
+            return defaultResult("评估内容为空");
+        }
+
         try {
-            String jsonStr = cleanJsonWrapper(content);
+            // 先去除 think 标签（MiniMax 思考过程）
+            String cleaned = content
+                    .replaceAll("(?s)<\\|im_start\\|>think.*?<\\|STOP\\|>", "")
+                    .replaceAll("(?s)<\\|im_end\\|>", "")
+                    .replaceAll("(?s)<\\|STOP\\|>", "")
+                    .replaceAll("(?s)<start_of_thought>.*?<end_of_thought>", "")
+                    .replaceAll("(?s)<think>.*?<\\/think>", "")
+                    .trim();
+
+            // 尝试找 JSON 块
+            String jsonStr = extractJson(cleaned);
+            if (jsonStr == null) {
+                log.warn("无法从评估结果中提取 JSON: {}", cleaned.substring(0, Math.min(100, cleaned.length())));
+                return defaultResult("无法解析评估结果");
+            }
+
             JsonNode node = objectMapper.readTree(jsonStr);
 
             int overallScore = safeGetInt(node, "overall_score", 5);
@@ -119,6 +140,8 @@ public class EvaluatorAgent {
                     ? node.get("feedback").asText() : "回答已记录";
             String modelAnswer = node.has("model_answer") && !node.get("model_answer").isNull()
                     ? node.get("model_answer").asText() : "建议结合具体项目经验来回答会更好。";
+
+            log.info("评估成功: score={}, feedback={}", overallScore, feedback.substring(0, Math.min(30, feedback.length())));
 
             return new EvaluationResult(
                     overallScore,
@@ -132,11 +155,26 @@ public class EvaluatorAgent {
                     )
             );
         } catch (Exception e) {
-            log.error("解析评估结果 JSON 失败: {}", content, e);
-            return new EvaluationResult(5, "评估结果解析异常，已记录回答",
-                    "建议从实际项目经验出发，结合具体案例来回答会更好。",
-                    new DimensionScores(5, 5, 5, 5));
+            log.error("解析评估结果 JSON 失败: {}", content.substring(0, Math.min(200, content.length())), e);
+            return defaultResult("评估解析异常");
         }
+    }
+
+    private EvaluationResult defaultResult(String reason) {
+        return new EvaluationResult(5, "[" + reason + "] 回答已记录，建议结合实际项目经验详细描述。",
+                "建议从项目背景、技术选型、遇到的问题和解决方案等角度展开回答。",
+                new DimensionScores(5, 5, 5, 5));
+    }
+
+    /**
+     * 从文本中提取 JSON 对象（找第一个 { 到最后一个 }）
+     */
+    private String extractJson(String text) {
+        int start = text.indexOf('{');
+        if (start < 0) return null;
+        int end = text.lastIndexOf('}');
+        if (end <= start) return null;
+        return text.substring(start, end + 1);
     }
 
     private int safeGetInt(JsonNode node, String field, int defaultVal) {

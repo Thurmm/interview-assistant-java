@@ -160,6 +160,11 @@ public class InterviewerAgent {
                 【出题要求】
                 %s
 
+                【重要约束】
+                - 禁止重复问与历史问题相同或高度相似的问题
+                - 必须基于候选人简历中尚未被深入讨论的的经历来提问
+                - 每道问题要有明显的角度差异
+
                 只输出问题本身，不要加"面试官："、"问题："等前缀，不要加引号。
                 """.formatted(questionIndex, historyText, phaseInstruction);
     }
@@ -172,15 +177,22 @@ public class InterviewerAgent {
         for (Message msg : history) {
             if ("interviewer".equals(msg.getRole()) && Boolean.TRUE.equals(msg.getIsQuestion())) {
                 qNum++;
-                sb.append(String.format("Q%d: %s%n", qNum, msg.getContent()));
+                String q = msg.getContent().length() > 200
+                        ? msg.getContent().substring(0, 200) + "..."
+                        : msg.getContent();
+                sb.append(String.format("Q%d: %s%n", qNum, q));
             } else if ("user".equals(msg.getRole())) {
-                String preview = msg.getContent().length() > 150
-                        ? msg.getContent().substring(0, 150) + "..."
+                String preview = msg.getContent().length() > 200
+                        ? msg.getContent().substring(0, 200) + "..."
                         : msg.getContent();
                 sb.append(String.format("A%d: %s%n", qNum, preview));
             }
         }
-        return sb.toString();
+        String summary = sb.toString();
+        if (qNum > 0) {
+            summary += "\n【已问过的题目方向】请勿从以上题目或其变体中选取，确保每道题有全新角度。\n";
+        }
+        return summary;
     }
 
     private String cleanOutput(String content) {

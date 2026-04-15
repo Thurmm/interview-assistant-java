@@ -1,5 +1,6 @@
 package com.interview.assistant.util;
 
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
@@ -7,11 +8,13 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
 import jakarta.annotation.PostConstruct;
-import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
 
 @Slf4j
 @Component
@@ -25,7 +28,6 @@ public class JsonFileUtil {
         this.objectMapper.registerModule(new JavaTimeModule());
         this.objectMapper.enable(SerializationFeature.INDENT_OUTPUT);
         this.objectMapper.disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
-
     }
 
     @PostConstruct
@@ -49,6 +51,30 @@ public class JsonFileUtil {
         }
         try {
             return objectMapper.readValue(path.toFile(), clazz);
+        } catch (IOException e) {
+            log.error("读取JSON文件失败: {}", path, e);
+            return defaultValue;
+        }
+    }
+
+    /**
+     * 读取 JSON 列表并转换为目标类型的 List
+     */
+    public <T> List<T> readJsonList(String filename, Class<T> elementClass, List<T> defaultValue) {
+        Path path = Paths.get(dataDir, filename);
+        if (!Files.exists(path)) {
+            return defaultValue;
+        }
+        try {
+            List<Map<String, Object>> rawList = objectMapper.readValue(
+                    path.toFile(),
+                    new TypeReference<List<Map<String, Object>>>() {}
+            );
+            List<T> result = new ArrayList<>();
+            for (Map<String, Object> map : rawList) {
+                result.add(objectMapper.convertValue(map, elementClass));
+            }
+            return result;
         } catch (IOException e) {
             log.error("读取JSON文件失败: {}", path, e);
             return defaultValue;

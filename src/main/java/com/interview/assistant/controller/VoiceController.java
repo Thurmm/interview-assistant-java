@@ -227,36 +227,66 @@ public class VoiceController {
                 public void onOpen(WebSocket webSocket, Response response) {
                     log.info("iFlytek WebSocket connected");
                     try {
-                        // Prepare audio in chunks (1280 bytes per frame, 40ms at 16kHz)
+                        // Send audio in chunks (1280 bytes per frame, 40ms at 16kHz)
                         int chunkSize = 1280;
-                        int totalChunks = (pcmData.length + chunkSize - 1) / chunkSize;
+                        int offset = 0;
+                        int frameIndex = 0;
                         
-                        // Send first frame with business parameters
-                        if (totalChunks > 0) {
-                            byte[] firstChunk = new byte[Math.min(chunkSize, pcmData.length)];
-                            System.arraycopy(pcmData, 0, firstChunk, 0, firstChunk.length);
+                        while (offset < pcmData.length) {
+                            int remaining = pcmData.length - offset;
+                            int frameSize = Math.min(chunkSize, remaining);
+                            byte[] chunk = new byte[frameSize];
+                            System.arraycopy(pcmData, offset, chunk, 0, frameSize);
                             
-                            Map<String, Object> businessParams = new java.util.HashMap<>();
-                            businessParams.put("aue", "raw");
-                            businessParams.put("sample", 16000);
-                            businessParams.put("language", "zh_cn");
-                            businessParams.put("accent", "mandarin");
-                            businessParams.put("vad_eos", 6000);
-                            businessParams.put("dwa", "wpgs");
+                            Map<String, Object> frame = new java.util.HashMap<>();
                             
-                            Map<String, Object> payload = new java.util.HashMap<>();
-                            payload.put("common", Map.of("app_id", voice.getAppId()));
-                            payload.put("business", businessParams);
-                            payload.put("data", Map.of(
-                                "status", 0,
-                                "format", "audio/L16;rate=16000",
-                                "encoding", "raw",
-                                "audio", Base64.getEncoder().encodeToString(firstChunk)
-                            ));
+                            if (offset == 0) {
+                                // First frame: include full header, parameter, and audio metadata
+                                Map<String, Object> businessParams = new java.util.HashMap<>();
+                                businessParams.put("domain", "iat");
+                                businessParams.put("language", "zh_cn");
+                                businessParams.put("accent", "mandarin");
+                                businessParams.put("eos", 6000);
+                                businessParams.put("dwa", "wpgs");
+                                
+                                frame.put("header", Map.of(
+                                    "app_id", voice.getAppId(),
+                                    "status", 0
+                                ));
+                                frame.put("parameter", Map.of("iat", businessParams));
+                                frame.put("payload", Map.of(
+                                    "audio", Map.of(
+                                        "encoding", "raw",
+                                        "sample_rate", 16000,
+                                        "channels", 1,
+                                        "bit_depth", 16,
+                                        "status", 0,
+                                        "audio", Base64.getEncoder().encodeToString(chunk)
+                                    )
+                                ));
+                            } else {
+                                // Intermediate/last frame: only header and payload
+                                boolean isLast = (offset + frameSize >= pcmData.length);
+                                frame.put("header", Map.of("status", isLast ? 2 : 1));
+                                frame.put("payload", Map.of(
+                                    "audio", Map.of(
+                                        "status", isLast ? 2 : 1,
+                                        "audio", Base64.getEncoder().encodeToString(chunk)
+                                    )
+                                ));
+                            }
                             
-                            String json = objectMapper.writeValueAsString(payload);
+                            String json = objectMapper.writeValueAsString(frame);
                             webSocket.send(json);
-                            log.info("Sent first frame, audio size: {}", firstChunk.length);
+                            log.info("Sent frame {} (status={}, size={})", frameIndex, offset == 0 ? 0 : (offset + frameSize >= pcmData.length ? 2 : 1), frameSize);
+                            
+                            offset += frameSize;
+                            frameIndex++;
+                            
+                            // Small delay between frames to simulate real-time streaming
+                            if (offset < pcmData.length) {
+                                Thread.sleep(40);
+                            }
                         }
 
                     } catch (Exception e) {
@@ -271,19 +301,36 @@ public class VoiceController {
                     log.info("iFlytek message: {}", text);
                     try {
                         var json = objectMapper.readTree(text);
-                        var code = json.path("code").asInt();
+                        var header = json.path("header");
+                        var code = header.path("code").asInt();
                         if (code != 0) {
-                            errorText.set("讯飞错误: " + json.path("desc").asText());
+                            errorText.set("讯飞错误: " + header.path("message").asText());
                             webSocket.close(1000, "error");
                             latch.countDown();
                             return;
                         }
                         
-                        var data = json.path("data");
-                        int status = data.path("status").asInt();
-                        String result = data.path("result").path("text").asText();
+                        int status = header.path("status").asInt();
+                        var resultObj = json.path("payload").path("result");
+                        String encodedText = resultObj.path("text").asText();
                         
-                        if (result != null && !result.isEmpty()) {
+                        if (encodedText != null && !encodedText.isEmpty()) {
+                            // text is base64 encoded JSON string, decode and parse
+                            byte[] decodedBytes = Base64.getDecoder().decode(encodedText);
+                            String textJson = new String(decodedBytes, StandardCharsets.UTF_8);
+                            var textObj = objectMapper.readTree(textJson);
+                            
+                            // Extract words from ws array
+                            StringBuilder sb = new StringBuilder();
+                            var ws = textObj.path("ws");
+                            for (var w : ws) {
+                                var cw = w.path("cw");
+                                for (var c : cw) {
+                                    sb.append(c.path("w").asText());
+                                }
+                            }
+                            String result = sb.toString();
+                            log.info("Extracted text: {}", result);
                             resultText.set(result);
                         }
                         
@@ -352,38 +399,75 @@ public class VoiceController {
      * - authorization: base64(HmacSHA256(host date request-line, apiSecret))
      */
     private String buildXfyunWsUrl(String appId, String apiKey, String apiSecret) throws Exception {
-        // RFC1123 format date for signature (must match ts parameter)
+        // RFC1123 format date for signature
         DateTimeFormatter dtf = DateTimeFormatter.ofPattern("EEE, dd MMM yyyy HH:mm:ss z")
                 .withLocale(java.util.Locale.US)
                 .withZone(ZoneId.of("GMT"));
         String date = dtf.format(Instant.now());
         
-        log.info("iFlytek auth - appId: {}, date: {}", appId, date);
+        log.info("=== iFlytek WebSocket Auth ===");
+        log.info("appId: {}", appId);
+        log.info("apiKey (raw): {}", apiKey);
+        log.info("apiKey length: {}", apiKey.length());
+        log.info("apiSecret (raw): {}", apiSecret);
+        log.info("apiSecret length: {}", apiSecret.length());
+        log.info("date: {}", date);
+        
+        // Try raw string first, also show hex decode for comparison
+        byte[] secretBytesRaw = apiSecret.getBytes(StandardCharsets.UTF_8);
+        log.info("apiSecret as raw bytes length: {}", secretBytesRaw.length);
+        
+        byte[] secretBytes = secretBytesRaw; // default to raw
+        
+        // Also try hex decode (32 hex chars -> 16 bytes)
+        try {
+            byte[] secretBytesHex = new byte[16];
+            for (int i = 0; i < 16; i++) {
+                secretBytesHex[i] = (byte) Integer.parseInt(apiSecret.substring(i*2, i*2+2), 16);
+            }
+            log.info("apiSecret as hex decode length: {}", secretBytesHex.length);
+            // Print both for comparison
+            StringBuilder rawHex = new StringBuilder();
+            for (byte b : secretBytesRaw) rawHex.append(String.format("%02x", b));
+            StringBuilder decHex = new StringBuilder();
+            for (byte b : secretBytesHex) decHex.append(String.format("%02x", b));
+            log.info("RAW secret hex: {}", rawHex);
+            log.info("HEX secret hex: {}", decHex);
+            log.info("Hex decode succeeded! Switching to HEX secret");
+            secretBytes = secretBytesHex;
+        } catch (Exception e) {
+            log.warn("Hex decode failed ({}), using raw string", e.getMessage());
+        }
         
         // Signature origin: "host date request-line"
         String signatureOrigin = "host: iat.xf-yun.com\ndate: " + date + "\nGET /v1 HTTP/1.1";
         log.info("Signature origin: {}", signatureOrigin.replace("\n", "\\n"));
         
-        // HmacSHA256 with apiSecret
+        // HmacSHA256 with decoded apiSecret
         Mac mac = Mac.getInstance("HmacSHA256");
-        SecretKeySpec secretKeySpec = new SecretKeySpec(apiSecret.getBytes(StandardCharsets.UTF_8), "HmacSHA256");
+        SecretKeySpec secretKeySpec = new SecretKeySpec(secretBytes, "HmacSHA256");
         mac.init(secretKeySpec);
         byte[] hmacBytes = mac.doFinal(signatureOrigin.getBytes(StandardCharsets.UTF_8));
         String signature = Base64.getEncoder().encodeToString(hmacBytes);
-        log.info("Signature: {}", signature);
+        log.info("Signature (base64): {}", signature);
         
         // Authorization origin
         String authorizationOrigin = "api_key=\"" + apiKey + "\", algorithm=\"hmac-sha256\", headers=\"host date request-line\", signature=\"" + signature + "\"";
         String authorization = Base64.getEncoder().encodeToString(authorizationOrigin.getBytes(StandardCharsets.UTF_8));
-        log.info("Authorization: {}", authorization);
+        log.info("Authorization origin: {}", authorizationOrigin);
+        log.info("Authorization (base64): {}", authorization);
         
-        // Build URL - ts uses the RFC1123 date string (not epoch seconds)
+        // Build URL
         String params = "appid=" + URLEncoder.encode(appId, StandardCharsets.UTF_8) + 
                        "&ts=" + URLEncoder.encode(date, StandardCharsets.UTF_8) +
                        "&ttl=300" +
                        "&authorization=" + URLEncoder.encode(authorization, StandardCharsets.UTF_8);
         
-        return "wss://iat.xf-yun.com/v1?" + params;
+        String wsUrl = "wss://iat.xf-yun.com/v1?" + params;
+        log.info("Final WebSocket URL: {}", wsUrl);
+        log.info("=== End iFlytek Auth ===");
+        
+        return wsUrl;
     }
 
     /**

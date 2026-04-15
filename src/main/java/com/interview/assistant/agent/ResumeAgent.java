@@ -2,10 +2,10 @@ package com.interview.assistant.agent;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.interview.assistant.config.QdrantConfig;
 import com.interview.assistant.dto.ResumeResponse;
-import com.interview.assistant.model.AppSettings.ModelConfig;
+import com.interview.assistant.model.AppSettings;
 import com.interview.assistant.service.DocumentParserService;
+import com.interview.assistant.service.LlmService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -24,7 +24,7 @@ import java.util.regex.Pattern;
 @RequiredArgsConstructor
 public class ResumeAgent {
 
-    private final QdrantConfig qdrantConfig;
+    private final LlmService llmService;
     private final ObjectMapper objectMapper;
     private final DocumentParserService documentParserService;
 
@@ -37,7 +37,7 @@ public class ResumeAgent {
             byte[] resumeBytes,
             String filename,
             String candidateId,
-            ModelConfig modelConfig
+            AppSettings.ModelConfig modelConfig
     ) {
         String rawText;
         try {
@@ -69,7 +69,7 @@ public class ResumeAgent {
         return profile;
     }
 
-    private ResumeResponse analyzeResume(String rawText, ModelConfig modelConfig) {
+    private ResumeResponse analyzeResume(String rawText, AppSettings.ModelConfig modelConfig) {
         String prompt = """
                 请分析以下简历，提取关键信息并生成候选人画像。
 
@@ -90,15 +90,12 @@ public class ResumeAgent {
                 }
                 """.formatted(rawText);
 
-        String result = qdrantConfig.callLlm(
+        String result = llmService.callLlm(
                 List.of(
                         Map.of("role", "system", "content", "你是专业的简历分析专家，提取信息要准确，画像描述要客观真实。"),
                         Map.of("role", "user", "content", prompt)
                 ),
-                modelConfig.getApiKey(),
-                modelConfig.getBaseUrl(),
-                modelConfig.getModel(),
-                0.3
+                modelConfig
         );
 
         if (result == null) {

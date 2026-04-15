@@ -163,7 +163,7 @@
                     }
                     return;
                 }
-                currentConvoId = data.convo_id;
+                currentConvoId = data.convoId;
                 renderMessages(data.convo.messages);
                 scrollToBottom();
                 document.getElementById('answer-input').focus();
@@ -187,10 +187,29 @@
             input.disabled = true;
             try {
                 var res = await fetch('/api/conversation/' + currentConvoId + '/answer', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({answer: answer})});
+                if (!res.ok) {
+                    throw new Error('服务器错误: ' + res.status);
+                }
                 var data = await res.json();
-                renderMessages(data.messages);
+                console.log('[DEBUG] answer response:', JSON.stringify(data, null, 2).substring(0, 1000));
+                console.log('[DEBUG] messages count:', data.messages ? data.messages.length : 0);
+                console.log('[DEBUG] evaluation:', data.evaluation);
+                
+                if (!data.messages || data.messages.length === 0) {
+                    console.error('[DEBUG] 错误: messages为空!');
+                    alert('服务器返回的数据异常，messages为空');
+                    return;
+                }
+                
+                var messages = data.messages || [];
+                var lastMsg = messages[messages.length - 1];
+                console.log('[DEBUG] lastMsg role:', lastMsg && lastMsg.role, 'content preview:', lastMsg && lastMsg.content && lastMsg.content.substring(0, 50));
+                console.log('[DEBUG] lastMsg score:', lastMsg && lastMsg.score, 'feedback:', lastMsg && lastMsg.feedback);
+                
                 input.value = '';
-                if (data.is_finished) {
+                renderMessages(data.messages);
+                
+                if (data.isFinished) {
                     isInterviewActive = false;
                     document.getElementById('input-area').style.display = 'none';
                     document.getElementById('end-area').style.display = 'flex';
@@ -207,6 +226,7 @@
                 }
                 scrollToBottom();
             } catch (e) {
+                console.error('[DEBUG] 发送失败:', e);
                 alert('发送失败: ' + e.message);
             } finally {
                 sendBtn.disabled = false;
@@ -218,13 +238,35 @@
 
         function renderMessages(messages) {
             var container = document.getElementById('messages-container');
+            console.log('[DEBUG renderMessages] 开始渲染, messages:', messages);
+            console.log('[DEBUG renderMessages] messages类型:', typeof messages, '是否为数组:', Array.isArray(messages));
             container.innerHTML = '';
-            for (var i = 0; i < messages.length; i++) {
-                var msg = messages[i];
+            var msgList = messages || [];
+            console.log('[DEBUG renderMessages] msgList长度:', msgList.length);
+            
+            if (msgList.length === 0) {
+                console.error('[DEBUG renderMessages] 警告: msgList为空!');
+                container.innerHTML = '<div style="color: red; padding: 20px;">错误: 没有消息可显示</div>';
+                return;
+            }
+            
+            for (var i = 0; i < msgList.length; i++) {
+                var msg = msgList[i];
+                console.log('[DEBUG renderMessages] 渲染消息', i, ': role=', msg.role, 'content=', msg.content && msg.content.substring(0, 30));
+                
                 var div = document.createElement('div');
                 div.className = 'message ' + (msg.role === 'interviewer' ? 'message-interviewer' : 'message-user');
                 if (msg.role === 'interviewer') {
-                    div.innerHTML = '<div class="message-avatar">🤖</div><div class="message-content"><div class="message-bubble">' + escapeHtml(msg.content) + '</div><div class="message-time">' + msg.timestamp + '</div></div>';
+                    var displayContent = msg.content || '';
+                    while (true) {
+                        var s = displayContent.indexOf("<think>");
+                        if (s === -1) break;
+                        var e = displayContent.indexOf("</think>", s);
+                        if (e === -1) break;
+                        displayContent = displayContent.substring(0, s) + displayContent.substring(e + 10);
+                    }
+		    console.log('[DEBUG renderMessages] 渲染过滤后消息', i, ': role=', msg.role, 'scontent=', displayContent);
+                    div.innerHTML = '<div class="message-avatar">🤖</div><div class="message-content"><div class="message-bubble">' + escapeHtml(displayContent) + '</div><div class="message-time">' + msg.timestamp + '</div></div>';
                 } else {
                     var scoreHtml = '';
                     if (msg.score !== undefined) {
@@ -235,6 +277,7 @@
                 }
                 container.appendChild(div);
             }
+            console.log('[DEBUG renderMessages] 渲染完成, container子元素数量:', container.children.length);
         }
 
         async function stopInterview() {

@@ -152,7 +152,19 @@
                             <div class="detail-message interviewer">
                                 <div class="msg-avatar">🤖</div>
                                 <div class="msg-content">
-                                    <div class="msg-bubble">${escapeHtml(msg.content)}</div>
+                                    <div class="msg-bubble">${
+                                        (() => {
+                                            var d = msg.content || '';
+                                            while (true) {
+                                                var s = d.indexOf("<think>");
+                                                if (s === -1) break;
+                                                var e = d.indexOf("</think>", s);
+                                                if (e === -1) break;
+                                                d = d.substring(0, s) + d.substring(e + 10);
+                                            }
+                                            return d;
+                                        })()
+                                    }</div>
                                     <div class="msg-time">${msg.timestamp}</div>
                                 </div>
                             </div>

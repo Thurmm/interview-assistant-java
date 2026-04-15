@@ -79,5 +79,6 @@ public class AppSettings {
         @JsonProperty("base_url")
         private String baseUrl;
         private String model;
+        private Double temperature;
     }
 }

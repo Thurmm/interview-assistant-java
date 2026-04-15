@@ -58,7 +58,7 @@ public class VectorStoreService {
 
     /**
      * RAG 检索：根据查询文本找最相似的简历内容
-     * 使用关键词重叠度（简单实现）
+     * 使用余弦相似度计算
      */
     public String retrieveContext(String candidateId, String query, int topK) {
         List<StoredDoc> docs = docStore.values().stream()
@@ -69,12 +69,11 @@ public class VectorStoreService {
             return "";
         }
 
-        // 纯文本包含匹配 + 关键词重叠评分
-        String[] queryWords = query.toLowerCase().split("\\s+");
+        // 使用余弦相似度计算
         return docs.stream()
                 .map(doc -> new AbstractMap.SimpleEntry<>(
                         doc,
-                        calcKeywordScore(queryWords, doc.getContent().toLowerCase())
+                        calcCosineSimilarity(query, doc.getContent())
                 ))
                 .sorted((a, b) -> Float.compare(b.getValue(), a.getValue()))
                 .limit(topK)
@@ -117,11 +116,11 @@ public class VectorStoreService {
             return "";
         }
 
-        String[] queryWords = question.toLowerCase().split("\\s+");
+        // 使用余弦相似度计算
         return refDocs.stream()
                 .map(doc -> new AbstractMap.SimpleEntry<>(
                         doc,
-                        calcKeywordScore(queryWords, doc.getContent().toLowerCase())
+                        calcCosineSimilarity(question, doc.getContent())
                 ))
                 .sorted((a, b) -> Float.compare(b.getValue(), a.getValue()))
                 .limit(topK)
@@ -157,5 +156,59 @@ public class VectorStoreService {
             }
         }
         return (float) matchCount / queryWords.length;
+    }
+
+    /**
+     * 计算余弦相似度（基于词频）
+     */
+    private float calcCosineSimilarity(String query, String docText) {
+        Map<String, Integer> queryFreq = calculateTermFrequency(query);
+        Map<String, Integer> docFreq = calculateTermFrequency(docText);
+        
+        // 计算向量点积
+        double dotProduct = 0;
+        for (String term : queryFreq.keySet()) {
+            if (docFreq.containsKey(term)) {
+                dotProduct += queryFreq.get(term) * docFreq.get(term);
+            }
+        }
+        
+        // 计算向量长度
+        double queryNorm = calculateNorm(queryFreq);
+        double docNorm = calculateNorm(docFreq);
+        
+        if (queryNorm == 0 || docNorm == 0) {
+            return 0f;
+        }
+        
+        return (float) (dotProduct / (queryNorm * docNorm));
+    }
+
+    /**
+     * 计算词频
+     */
+    private Map<String, Integer> calculateTermFrequency(String text) {
+        Map<String, Integer> freqMap = new HashMap<>();
+        String[] words = text.toLowerCase().split("\\s+");
+        
+        for (String word : words) {
+            word = word.replaceAll("[^a-zA-Z0-9\\u4e00-\\u9fa5]", "");
+            if (word.length() > 1) {
+                freqMap.put(word, freqMap.getOrDefault(word, 0) + 1);
+            }
+        }
+        
+        return freqMap;
+    }
+
+    /**
+     * 计算向量长度
+     */
+    private double calculateNorm(Map<String, Integer> freqMap) {
+        double sum = 0;
+        for (int freq : freqMap.values()) {
+            sum += freq * freq;
+        }
+        return Math.sqrt(sum);
     }
 }

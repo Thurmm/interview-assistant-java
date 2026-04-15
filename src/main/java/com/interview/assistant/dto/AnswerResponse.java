@@ -1,5 +1,6 @@
 package com.interview.assistant.dto;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
 import com.interview.assistant.model.Message;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -25,6 +26,7 @@ public class AnswerResponse {
     public static class EvaluationResult {
         private Integer score;
         private String feedback;
+        @JsonProperty("model_answer")
         private String modelAnswer;
         /** 分维度评分（V2 新增） */
         private DimensionScores dimensionScores;

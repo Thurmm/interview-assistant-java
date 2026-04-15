@@ -45,3 +45,14 @@ data/
 .env
 .env.local
 *.env
+
+# Backup
+*.bak
+*.bak2
+*.bak3
+
+# IDE
+.vscode/
+
+# Test
+src/test/

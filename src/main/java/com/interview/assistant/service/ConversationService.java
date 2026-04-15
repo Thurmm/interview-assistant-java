@@ -47,7 +47,7 @@ public class ConversationService {
     // ============ 对话查询 ============
 
     public List<Conversation> getAllConversations() {
-        return jsonFileUtil.readJson(CONVOS_FILE, List.class, List.of());
+        return jsonFileUtil.readJsonList(CONVOS_FILE, Conversation.class, List.of());
     }
 
     public Optional<Conversation> getConversation(String id) {

@@ -1,26 +1,31 @@
 package com.interview.assistant.config;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
-import java.io.BufferedReader;
-import java.io.InputStreamReader;
+import java.io.IOException;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
-import java.util.stream.Collectors;
 
-/**
- * 通过命令行 curl 调用 LLM API
- *
- * 解决 WSL 环境下 Java HTTP client 的网络兼容性问题。
- */
 @Slf4j
 @Component
 public class QdrantConfig {
 
     @Value("${spring.ai.openai.api-key:}")
     private String defaultApiKey;
+
+    private final ObjectMapper objectMapper = new ObjectMapper();
+    private final HttpClient httpClient = HttpClient.newBuilder()
+            .connectTimeout(Duration.ofSeconds(10))
+            .build();
 
     public String callLlm(
             List<Map<String, String>> messages,
@@ -35,48 +40,65 @@ public class QdrantConfig {
 
         String jsonBody = buildChatBody(messages, effectiveModel, temperature);
 
-        String curlCmd = String.format(
-                "curl -s --max-time 20 -X POST '%s/chat/completions' " +
-                "-H 'Authorization: Bearer %s' " +
-                "-H 'Content-Type: application/json' " +
-                "-d '%s'",
-                effectiveBaseUrl,
-                effectiveKey,
-                escapeShell(jsonBody)
-        );
+        log.info("[QdrantConfig] HTTP — url={} model={}", effectiveBaseUrl, effectiveModel);
 
-        System.out.println("[QdrantConfig] curl — url=" + effectiveBaseUrl + " model=" + effectiveModel);
+        int maxRetries = 3;
+        for (int attempt = 1; attempt <= maxRetries; attempt++) {
+            try {
+                HttpRequest request = HttpRequest.newBuilder()
+                        .uri(URI.create(effectiveBaseUrl + "/chat/completions"))
+                        .header("Authorization", "Bearer " + effectiveKey)
+                        .header("Content-Type", "application/json")
+                        .timeout(Duration.ofSeconds(30))
+                        .POST(HttpRequest.BodyPublishers.ofString(jsonBody))
+                        .build();
 
-        try {
-            ProcessBuilder pb = new ProcessBuilder("/bin/bash", "-c", curlCmd);
-            pb.environment().putAll(System.getenv());
-            Process process = pb.start();
+                HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
 
-            String output;
-            try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
-                output = reader.lines().collect(Collectors.joining("\n"));
-            }
+                int statusCode = response.statusCode();
+                String output = response.body();
 
-            int exitCode = process.waitFor();
+                if (statusCode == 429 || statusCode == 500 || statusCode == 520) {
+                    // Rate limit or server error - retry
+                    log.warn("[QdrantConfig] HTTP error ({}): {}, attempt {}/{}", 
+                            statusCode, output.substring(0, Math.min(150, output.length())), 
+                            attempt, maxRetries);
+                    if (attempt < maxRetries) {
+                        Thread.sleep(3000);
+                        continue;
+                    }
+                    return null;
+                }
 
-            if (exitCode != 0) {
-                System.out.println("[QdrantConfig] curl exit=" + exitCode + " output: " + output.substring(0, Math.min(150, output.length())));
+                if (statusCode != 200) {
+                    log.error("[QdrantConfig] HTTP error ({}): {}", statusCode, output);
+                    return null;
+                }
+
+                if (output == null || output.isBlank()) {
+                    log.warn("[QdrantConfig] HTTP 返回空");
+                    return null;
+                }
+
+                String content = extractContent(output);
+                log.info("[QdrantConfig] API响应前80字: {}", content != null ? content.substring(0, Math.min(80, content.length())) : "null");
+                return content;
+
+            } catch (IOException e) {
+                log.warn("[QdrantConfig] HTTP IO异常(attempt {}/{}): {}", attempt, maxRetries, e.getMessage());
+                if (attempt < maxRetries) {
+                    try { Thread.sleep(3000); } catch (InterruptedException ignored) {}
+                    continue;
+                }
+                return null;
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                log.error("[QdrantConfig] 线程中断", e);
                 return null;
             }
-
-            if (output == null || output.isBlank()) {
-                System.out.println("[QdrantConfig] curl 返回空");
-                return null;
-            }
-
-            String content = extractContent(output);
-            System.out.println("[QdrantConfig] API响应前80字: " + (content != null ? content.substring(0, Math.min(80, content.length())) : "null"));
-            return content;
-
-        } catch (Exception e) {
-            System.out.println("[QdrantConfig] curl 执行异常: " + e.getMessage());
-            return null;
         }
+
+        return null;
     }
 
     private String buildChatBody(List<Map<String, String>> messages, String model, Double temperature) {
@@ -100,61 +122,29 @@ public class QdrantConfig {
      * 从 MiniMax / OpenAI API 响应中提取 content
      *
      * MiniMax 响应格式:
-     * {"choices":[{"message":{"content":"<think>...</think> 实际回答"}}],"created":...}
-     *
-     * 需要正确处理转义字符和嵌套引号
+     * {"id":"...","choices":[{"index":0,"message":{"role":"assistant","content":"实际回答"},"finish_reason":"stop"}],"usage":{...}}
      */
     private String extractContent(String text) {
-        // 1. 找 JSON 开始
-        int jsonStart = text.indexOf('{');
-        if (jsonStart < 0) return text.substring(0, Math.min(200, text.length()));
-        String json = text.substring(jsonStart);
-
-        // 2. 找 "content" 字段位置
-        int contentIdx = json.indexOf("\"content\"");
-        if (contentIdx < 0) return json.substring(0, Math.min(200, json.length()));
-
-        // 3. 从 content: 之后解析带转义的 JSON 字符串值
-        int valueStart = -1, valueEnd = -1;
-        boolean inValue = false;
-        boolean escaped = false;
-
-        for (int i = json.indexOf(':', contentIdx) + 1; i < json.length(); i++) {
-            char c = json.charAt(i);
-            if (escaped) {
-                escaped = false;
-                continue;
-            }
-            if (c == '\\') {
-                escaped = true;
-                continue;
-            }
-            if (c == '"') {
-                if (!inValue) {
-                    valueStart = i + 1;
-                    inValue = true;
-                } else {
-                    valueEnd = i;
-                    break;
+        try {
+            JsonNode root = objectMapper.readTree(text);
+            JsonNode choices = root.get("choices");
+            if (choices != null && choices.isArray() && choices.size() > 0) {
+                JsonNode message = choices.get(0).get("message");
+                if (message != null && message.has("content")) {
+                    String content = message.get("content").asText();
+                    return content
+                            .replaceAll("(<\\|im_start\\|>think.*?<\\|STOP\\|>)\\s*", " ")
+                            .replaceAll("<\\|im_end\\|>", "")
+                            .replaceAll("<\\|STOP\\|>", "")
+                            .trim();
                 }
             }
+            // Fallback: return first 200 chars
+            return text.substring(0, Math.min(200, text.length()));
+        } catch (Exception e) {
+            // JSON parse failed, return trimmed text
+            return text != null ? text.trim() : "";
         }
-
-        if (valueStart < 0 || valueEnd < 0 || valueEnd <= valueStart) {
-            return json.substring(0, Math.min(200, json.length()));
-        }
-
-        String content = json.substring(valueStart, valueEnd);
-
-        // 4. 去除 MiniMax 思考标签 <|im_start|>think ... <|STOP|>
-        content = content
-                .replaceAll("(<\\|im_start\\|>think.*?<\\|STOP\\|>)\\s*", " ")
-                .replaceAll("<\\|im_end\\|>", "")
-                .replaceAll("<\\|STOP\\|>", "")
-                .replaceAll("<think>.*?</think>", "")
-                .trim();
-
-        return content.isEmpty() ? json.substring(0, Math.min(100, json.length())) : content;
     }
 
     private String escapeJson(String s) {

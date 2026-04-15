@@ -13,9 +13,15 @@ public class SpringAiConfig {
     @Value("${spring.ai.openai.api-key:}")
     private String openAiApiKey;
 
+    @Value("${spring.ai.openai.base-url:https://api.openai.com/v1}")
+    private String openAiBaseUrl;
+
     @Bean
     public OpenAiApi openAiApi() {
-        return new OpenAiApi(openAiApiKey != null && !openAiApiKey.isBlank() ? openAiApiKey : "dummy");
+        if (openAiApiKey == null || openAiApiKey.isBlank()) {
+            return new OpenAiApi("dummy");
+        }
+        return new OpenAiApi(openAiApiKey, openAiBaseUrl);
     }
 
     @Bean
