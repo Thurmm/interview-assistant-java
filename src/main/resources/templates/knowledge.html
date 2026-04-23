@@ -1,0 +1,516 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>📚 知识库 - AI 面试助手</title>
+    <link rel="stylesheet" href="/css/style.css">
+    <style>
+        .kb-page { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+        .kb-header { display: flex; align-items: center; justify-content: space-between; padding: 24px 32px 0; }
+        .kb-title-text { font-size: 22px; font-weight: 700; color: var(--gray-900); }
+        .kb-stats { font-size: 13px; color: var(--gray-500); background: var(--gray-100); padding: 6px 14px; border-radius: 20px; }
+        .kb-body { flex: 1; display: flex; gap: 20px; padding: 20px 32px; min-height: 0; overflow: hidden; }
+
+        .kb-left { flex: 1; display: flex; flex-direction: column; gap: 14px; overflow-y: auto; }
+        .kb-right { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+
+        .kb-card { background: white; border-radius: 12px; padding: 20px; box-shadow: var(--shadow); }
+        .kb-card-title { font-size: 14px; font-weight: 600; color: var(--gray-900); margin-bottom: 12px; }
+        .kb-input { width: 100%; border: 1px solid var(--gray-200); border-radius: 8px; padding: 10px 12px; font-size: 13px; color: var(--gray-900); resize: vertical; box-sizing: border-box; font-family: inherit; }
+        .kb-input:focus { outline: none; border-color: var(--primary); }
+        .kb-answer-input { min-height: 100px; }
+        .kb-batch-input { min-height: 100px; font-family: 'Courier New', monospace; font-size: 12px; }
+        .kb-add-btn { width: 100%; margin-top: 10px; padding: 10px; background: var(--primary); color: white; border: none; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer; transition: background 0.2s; }
+        .kb-add-btn:hover { background: var(--primary-hover); }
+        .kb-search-btn { width: 100%; margin-top: 10px; padding: 8px; background: #059669; color: white; border: none; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer; transition: background 0.2s; }
+        .kb-search-btn:hover { background: #047857; }
+        .kb-msg { margin-top: 8px; font-size: 13px; color: var(--gray-700); }
+        .kb-msg.success { color: #059669; }
+        .kb-msg.error { color: var(--danger); }
+        .kb-search-result { margin-top: 10px; max-height: 180px; overflow-y: auto; font-size: 13px; color: var(--gray-700); line-height: 1.7; white-space: pre-wrap; background: var(--gray-50); border-radius: 8px; padding: 12px; }
+        .kb-danger { margin-top: 8px; }
+        .kb-clear-btn { width: 100%; padding: 10px; background: #fef2f2; color: var(--danger); border: 1px solid #fecaca; border-radius: 8px; font-size: 14px; cursor: pointer; transition: all 0.2s; }
+        .kb-clear-btn:hover { background: #fee2e2; }
+
+        /* doc import */
+        .kb-doc-progress { margin: 10px 0; display: none; }
+        .kb-doc-progress-bar { height: 6px; background: var(--gray-200); border-radius: 3px; overflow: hidden; }
+        .kb-doc-progress-fill { height: 100%; background: linear-gradient(90deg, #4f46e5, #7c3aed); border-radius: 3px; width: 0%; transition: width 0.4s ease; animation: kb-stripe 1.5s linear infinite; background-size: 30px 30px; background-image: linear-gradient(45deg, rgba(255,255,255,0.15) 25%, transparent 25%, transparent 50%, rgba(255,255,255,0.15) 50%, rgba(255,255,255,0.15) 75%, transparent 75%, transparent); }
+        .kb-doc-progress-text { font-size: 12px; color: var(--gray-500); margin-top: 6px; text-align: center; }
+        @keyframes kb-stripe { from { background-position: 0 0; } to { background-position: 30px 0; } }
+        .kb-import-preview { margin: 10px 0; border: 1px solid var(--gray-200); border-radius: 8px; overflow: hidden; display: none; }
+        .kb-import-preview-header { display: flex; justify-content: space-between; align-items: center; padding: 10px 12px; background: var(--gray-50); cursor: pointer; font-size: 13px; font-weight: 500; color: var(--gray-700); }
+        .kb-import-preview-header:hover { background: var(--gray-100); }
+        .kb-preview-toggle { font-size: 11px; color: var(--gray-400); transition: transform 0.2s; }
+        .kb-preview-toggle.open { transform: rotate(180deg); }
+        .kb-import-preview-body { display: none; max-height: 300px; overflow-y: auto; }
+        .kb-import-preview-body.open { display: block; }
+        .kb-preview-item { padding: 10px 12px; border-bottom: 1px solid var(--gray-100); font-size: 13px; display: flex; align-items: flex-start; gap: 8px; }
+        .kb-preview-item:last-child { border-bottom: none; }
+        .status-dot { flex-shrink: 0; width: 8px; height: 8px; border-radius: 50%; margin-top: 5px; }
+        .item-q { font-weight: 600; color: var(--gray-900); margin-bottom: 2px; }
+        .item-a { font-size: 12px; color: var(--gray-500); line-height: 1.5; }
+        .item-status { font-size: 11px; margin-top: 4px; }
+        .status-pending .status-dot { background: #f59e0b; }
+        .status-stored .status-dot { background: #059669; }
+        .status-failed .status-dot { background: var(--danger); }
+
+        /* list */
+        .kb-list { display: flex; flex-direction: column; gap: 10px; padding-right: 4px; overflow-y: auto; flex: 1; }
+        .kb-search-wrap { display: flex; gap: 8px; margin-bottom: 12px; align-items: center; }
+        .kb-search-input { flex: 1; padding: 8px 12px; border: 1px solid var(--gray-200); border-radius: 8px; font-size: 13px; color: var(--gray-900); font-family: inherit; }
+        .kb-search-input:focus { outline: none; border-color: var(--primary); }
+        .kb-item-actions { display: flex; gap: 4px; margin-left: auto; opacity: 0; transition: opacity 0.2s; }
+        .kb-item:hover .kb-item-actions { opacity: 1; }
+        .kb-item-edit { display: none; }
+        .kb-item.editing .kb-item-view { display: none; }
+        .kb-item.editing .kb-item-edit { display: block; }
+        .kb-item-edit-row { margin-bottom: 8px; }
+        .kb-item-edit-label { font-size: 11px; font-weight: 600; color: var(--gray-500); margin-bottom: 2px; }
+        .kb-item-edit-input { width: 100%; padding: 6px 10px; border: 1px solid var(--gray-300); border-radius: 6px; font-size: 13px; color: var(--gray-900); font-family: inherit; box-sizing: border-box; }
+        .kb-item-edit-input:focus { outline: none; border-color: var(--primary); }
+        .kb-item-edit-actions { display: flex; gap: 6px; margin-top: 8px; }
+        .kb-item-edit-actions button { padding: 5px 12px; border-radius: 6px; font-size: 12px; cursor: pointer; border: none; font-weight: 500; }
+        .kb-item-edit-actions .btn-save { background: var(--primary); color: white; }
+        .kb-item-edit-actions .btn-save:hover { background: var(--primary-hover); }
+        .kb-item-edit-actions .btn-cancel { background: var(--gray-200); color: var(--gray-700); }
+        .kb-action-btn { background: none; border: none; cursor: pointer; font-size: 14px; padding: 2px 6px; border-radius: 4px; }
+        .kb-action-btn:hover { background: var(--gray-200); }
+        .kb-action-btn.delete:hover { background: #fee2e2; color: var(--danger); }
+        
+        .kb-list::-webkit-scrollbar { width: 4px; }
+        .kb-list::-webkit-scrollbar-thumb { background: var(--gray-300); border-radius: 2px; }
+        .kb-item { background: var(--gray-50); border-radius: 10px; padding: 14px 16px; border-left: 3px solid var(--primary); }
+        .kb-item:hover { background: var(--gray-100); border-left-color: var(--primary-hover); }
+        .kb-item-header { display: flex; align-items: flex-start; gap: 8px; margin-bottom: 6px; }
+        .kb-item-num { flex-shrink: 0; background: var(--primary); color: white; border-radius: 50%; width: 20px; height: 20px; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 600; margin-top: 1px; }
+        .kb-item-q { font-weight: 600; color: var(--gray-900); font-size: 13.5px; flex: 1; }
+        .kb-item-a { font-size: 13px; color: var(--gray-600); line-height: 1.6; white-space: pre-wrap; padding-left: 28px; margin-bottom: 6px; }
+        .kb-item-tags { display: flex; flex-wrap: wrap; gap: 4px; padding-left: 28px; }
+        .kb-tag { padding: 2px 8px; background: #dbeafe; color: #1e40af; border-radius: 12px; font-size: 11px; }
+        .kb-empty { text-align: center; padding: 50px 20px; color: var(--gray-400); font-size: 14px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <aside class="sidebar">
+            <div class="logo">🎯 面试助手</div>
+            <nav>
+                <a href="/" class="nav-item" id="nav-chat"><span class="icon">💬</span> 面试对话</a>
+                <a href="/history" class="nav-item" id="nav-history"><span class="icon">📋</span> 历史记录</a>
+                <a href="/settings" class="nav-item" id="nav-settings"><span class="icon">⚙️</span> 面试设置</a>
+                <a href="/resume" class="nav-item" id="nav-resume"><span class="icon">📄</span> 简历解析</a>
+                <a href="/knowledge" class="nav-item active" id="nav-kb"><span class="icon">📚</span> 知识库</a>
+            </nav>
+            <div class="sidebar-footer"><small>面试模拟助手 v2.0</small></div>
+        </aside>
+
+        <main class="main-content">
+            <div class="kb-page">
+                <div class="kb-header">
+                    <div class="kb-title-text">📚 面试知识库</div>
+                    <div class="kb-stats" id="kb-stats">加载中...</div>
+                </div>
+
+                <div class="kb-body">
+                    <!-- Left: Add/Search -->
+                    <div class="kb-left">
+                        <div class="kb-card">
+                            <div class="kb-card-title">➕ 添加参考答案</div>
+                            <textarea id="kb-question" class="kb-input" placeholder="面试问题，如：HashMap 和 Hashtable 的区别？"></textarea>
+                            <textarea id="kb-answer" class="kb-input kb-answer-input" placeholder="标准答案（支持多行）"></textarea>
+                            <input type="text" id="kb-tags" class="kb-input" placeholder="标签，多个用逗号分隔，如：Java,集合框架">
+                            <button class="kb-add-btn" onclick="kbAddAnswer()">存入知识库</button>
+                            <div class="kb-msg" id="kb-add-msg"></div>
+                        </div>
+
+                        <div class="kb-card">
+                            <div class="kb-card-title">🔍 检索测试</div>
+                            <input type="text" id="kb-search-query" class="kb-input" placeholder="输入问题测试检索效果">
+                            <button class="kb-search-btn" onclick="kbSearch()">搜索</button>
+                            <div class="kb-search-result" id="kb-search-result"></div>
+                        </div>
+
+                        <div class="kb-card">
+                            <div class="kb-card-title">📥 批量导入（JSON 数组）</div>
+                            <textarea id="kb-batch-input" class="kb-input kb-batch-input" placeholder="JSON数组格式：[&#10;  {&#34;question&#34;:&#34;...&#34;,&#34;answer&#34;:&#34;...&#34;,&#34;tags&#34;:[&#34;Java&#34;]},&#10;  ...&#10;]"></textarea>
+                            <button class="kb-add-btn" onclick="kbBatchImport()">批量导入</button>
+                            <div class="kb-msg" id="kb-batch-msg"></div>
+                        </div>
+
+                        <div class="kb-card">
+                            <div class="kb-card-title">📄 文档导入（自动拆分 Q&A）</div>
+                            <input type="file" id="kb-doc-file" class="kb-input" accept=".pdf,.docx" style="padding: 6px 0;">
+                            <div id="kb-doc-info" style="font-size:12px;color:var(--gray-500);margin-top:4px;"></div>
+                            <div class="kb-doc-progress" id="kb-doc-progress">
+                                <div class="kb-doc-progress-bar"><div class="kb-doc-progress-fill" id="kb-doc-progress-fill"></div></div>
+                                <div class="kb-doc-progress-text" id="kb-doc-progress-text">准备中...</div>
+                            </div>
+                            <div class="kb-import-preview" id="kb-import-preview">
+                                <div class="kb-import-preview-header" onclick="toggleKbPreview()">
+                                    <span>📋 提取到的问答对 <span id="kb-preview-count"></span></span>
+                                    <span class="kb-preview-toggle" id="kb-preview-toggle">▼</span>
+                                </div>
+                                <div class="kb-import-preview-body" id="kb-import-preview-body"></div>
+                            </div>
+                            <button class="kb-add-btn" id="kb-doc-import-btn" onclick="kbDocImport()">📥 导入并解析</button>
+                            <div class="kb-msg" id="kb-doc-msg"></div>
+                            <div id="kb-import-result"></div>
+                        </div>
+
+                        <div class="kb-danger">
+                            <button class="kb-clear-btn" onclick="kbClearAll()">🗑️ 清空知识库</button>
+                        </div>
+                    </div>
+
+                    <!-- Right: List -->
+                    <div class="kb-right">
+                        <div class="kb-search-wrap">
+                            <input type="text" class="kb-search-input" id="kb-list-search" placeholder="🔍 搜索问题、答案、标签..." onkeyup="filterKbList(this.value)">
+                        </div>
+                        <div class="kb-list" id="kb-list">
+                            <div class="kb-empty">暂无参考答案，请从左侧添加</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+<script>
+    // Nav active
+    document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
+    document.getElementById('nav-kb').classList.add('active');
+
+    // Load stats + list on init
+    loadKbStats();
+    loadKbList();
+
+    async function loadKbStats() {
+        try {
+            const res = await fetch('/api/vector/reference');
+            const data = await res.json();
+            const count = data.success && data.items ? data.items.length : 0;
+            document.getElementById('kb-stats').textContent = count + ' 条参考答案';
+        } catch(e) { document.getElementById('kb-stats').textContent = '加载失败'; }
+    }
+
+    async function loadKbList() {
+        try {
+            const res = await fetch('/api/vector/reference');
+            const data = await res.json();
+            if (!data.success || !data.items || data.items.length === 0) {
+                kbAllItems = [];
+                renderKbList([]);
+                return;
+            }
+            kbAllItems = data.items;
+            renderKbList(kbAllItems);
+        } catch(e) { console.error('Failed to load kb list', e); }
+    }
+
+    async function kbAddAnswer() {
+        const question = document.getElementById('kb-question').value.trim();
+        const answer = document.getElementById('kb-answer').value.trim();
+        const tagsStr = document.getElementById('kb-tags').value.trim();
+        const msgEl = document.getElementById('kb-add-msg');
+        if (!question || !answer) { msgEl.textContent = '问题和答案不能为空'; msgEl.className = 'kb-msg error'; return; }
+        const tags = tagsStr ? tagsStr.split(/[,，]/).map(t => t.trim()).filter(Boolean) : [];
+        try {
+            const res = await fetch('/api/vector/reference', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({question, answer, tags})
+            });
+            const data = await res.json();
+            if (data.success) {
+                msgEl.textContent = '已存入知识库'; msgEl.className = 'kb-msg success';
+                document.getElementById('kb-question').value = '';
+                document.getElementById('kb-answer').value = '';
+                document.getElementById('kb-tags').value = '';
+                await loadKbStats();
+                await loadKbList();
+            } else { msgEl.textContent = '存入失败: ' + (data.error || ''); msgEl.className = 'kb-msg error'; }
+        } catch(e) { msgEl.textContent = '网络错误: ' + e.message; msgEl.className = 'kb-msg error'; }
+    }
+
+    async function kbSearch() {
+        const query = document.getElementById('kb-search-query').value.trim();
+        const resultEl = document.getElementById('kb-search-result');
+        if (!query) { resultEl.textContent = '请输入查询内容'; return; }
+        resultEl.textContent = '检索中...';
+        try {
+            const res = await fetch('/api/vector/search?query=' + encodeURIComponent(query) + '&topK=3');
+            const data = await res.json();
+            if (data.success) {
+                resultEl.textContent = (data.results && data.results.trim()) ? '检索结果: ' + data.results : '未找到匹配结果';
+            } else { resultEl.textContent = '检索失败: ' + (data.error || ''); }
+        } catch(e) { resultEl.textContent = '检索失败: ' + e.message; }
+    }
+
+    async function kbBatchImport() {
+        const input = document.getElementById('kb-batch-input').value.trim();
+        const msgEl = document.getElementById('kb-batch-msg');
+        if (!input) { msgEl.textContent = '请输入 JSON 数据'; msgEl.className = 'kb-msg error'; return; }
+        try {
+            const items = JSON.parse(input);
+            if (!Array.isArray(items)) throw new Error('需要 JSON 数组格式');
+            const res = await fetch('/api/vector/reference/batch', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(items)
+            });
+            const data = await res.json();
+            if (data.success) {
+                msgEl.textContent = '成功存入 ' + data.stored + ' 条（共 ' + data.total + ' 条）';
+                msgEl.className = 'kb-msg success';
+                document.getElementById('kb-batch-input').value = '';
+                await loadKbStats();
+                await loadKbList();
+            } else { msgEl.textContent = '失败: ' + (data.error || ''); msgEl.className = 'kb-msg error'; }
+        } catch(e) { msgEl.textContent = 'JSON 格式错误: ' + e.message; msgEl.className = 'kb-msg error'; }
+    }
+
+    async function kbClearAll() {
+        if (!confirm('确定清空所有参考答案？此操作不可恢复。')) return;
+        try {
+            const res = await fetch('/api/vector/reference/clear', {method: 'DELETE'});
+            const data = await res.json();
+            if (data.success) { await loadKbStats(); await loadKbList(); alert('知识库已清空'); }
+            else { alert('清空失败: ' + (data.error || '')); }
+        } catch(e) { alert('网络错误: ' + e.message); }
+    }
+
+    function toggleKbPreview() {
+        document.getElementById('kb-import-preview-body').classList.toggle('open');
+        document.getElementById('kb-preview-toggle').classList.toggle('open');
+    }
+
+    async function kbDocImport() {
+        const fileInput = document.getElementById('kb-doc-file');
+        const file = fileInput.files[0];
+        const msgEl = document.getElementById('kb-doc-msg');
+        const resultEl = document.getElementById('kb-import-result');
+        const btn = document.getElementById('kb-doc-import-btn');
+        const progressEl = document.getElementById('kb-doc-progress');
+        const progressFill = document.getElementById('kb-doc-progress-fill');
+        const progressText = document.getElementById('kb-doc-progress-text');
+        const previewEl = document.getElementById('kb-import-preview');
+        const previewBody = document.getElementById('kb-import-preview-body');
+        const previewCount = document.getElementById('kb-preview-count');
+
+        if (!file) { msgEl.textContent = '请先选择文件（PDF 或 DOCX）'; msgEl.className = 'kb-msg error'; return; }
+
+        previewBody.innerHTML = '';
+        previewBody.classList.remove('open');
+        document.getElementById('kb-preview-toggle').classList.remove('open');
+        previewEl.style.display = 'none';
+
+        progressEl.style.display = 'block';
+        progressFill.style.width = '5%';
+        progressText.textContent = '准备上传...';
+        msgEl.textContent = ''; msgEl.className = 'kb-msg';
+        resultEl.textContent = '';
+        btn.disabled = true;
+
+        let progressPct = 5;
+        const progressTimer = setInterval(() => {
+            if (progressPct < 85) {
+                progressPct += Math.random() * 4;
+                progressFill.style.width = Math.min(progressPct, 85) + '%';
+                if (progressPct < 20) progressText.textContent = '上传文件中...';
+                else if (progressPct < 45) progressText.textContent = 'AI 分析中（请耐心等待）...';
+                else if (progressPct < 70) progressText.textContent = 'AI 正在拆分问答对...';
+                else progressText.textContent = '正在逐条存入知识库...';
+            }
+        }, 2000);
+
+        const formData = new FormData();
+        formData.append('file', file);
+
+        try {
+            const res = await fetch('/api/vector/document/import', { method: 'POST', body: formData });
+            clearInterval(progressTimer);
+
+            const data = await res.json();
+            btn.disabled = false;
+            progressFill.style.width = '100%';
+            progressText.textContent = '完成';
+
+            if (data.success) {
+                if (data.qas && data.qas.length > 0) {
+                    renderKbPreview(data.qas, 'stored');
+                    previewCount.textContent = data.qas.length + ' 条';
+                    previewEl.style.display = 'block';
+                    previewBody.classList.add('open');
+                    document.getElementById('kb-preview-toggle').classList.add('open');
+                    resultEl.innerHTML = '<div class="kb-msg success">成功导入 ' + data.qas.length + ' 条问答</div>';
+                } else {
+                    resultEl.innerHTML = '<div class="kb-msg error">未识别到有效问答对</div>';
+                }
+                await loadKbStats();
+                await loadKbList();
+            } else {
+                msgEl.textContent = '导入失败: ' + (data.error || '');
+                msgEl.className = 'kb-msg error';
+            }
+        } catch(e) {
+            clearInterval(progressTimer);
+            btn.disabled = false;
+            msgEl.textContent = '网络错误: ' + e.message;
+            msgEl.className = 'kb-msg error';
+        }
+    }
+
+    function renderKbPreview(qas, status) {
+        const body = document.getElementById('kb-import-preview-body');
+        body.innerHTML = '';
+        qas.forEach(qa => {
+            const div = document.createElement('div');
+            div.className = 'kb-preview-item status-' + status;
+            div.innerHTML =
+                '<span class="status-dot"></span>' +
+                '<div style="flex:1;min-width:0;">' +
+                '  <div class="item-q">' + escapeHtml((qa.question || '').substring(0, 80)) + '</div>' +
+                '  <div class="item-a">' + escapeHtml((qa.answer || '').substring(0, 80)) + '</div>' +
+                '  <div class="item-status">' + (status === 'stored' ? '✅ 已存入' : '❌ 失败') + '</div>' +
+                '</div>';
+            body.appendChild(div);
+        });
+    }
+
+    function escapeHtml(text) {
+        if (!text) return '';
+        const d = document.createElement('div');
+        d.textContent = text;
+        return d.innerHTML;
+    }
+</script>
+
+<script>
+    // Search/filter
+    let kbAllItems = [];
+
+    function filterKbList(query) {
+        query = (query || document.getElementById('kb-list-search').value || '').trim().toLowerCase();
+        const list = document.getElementById('kb-list');
+        if (!kbAllItems.length) return;
+        if (!query) {
+            renderKbList(kbAllItems);
+            return;
+        }
+        const filtered = kbAllItems.filter(item => {
+            const q = (item.question || '').toLowerCase();
+            const a = (item.answer || '').toLowerCase();
+            const t = (item.tags || []).join(' ').toLowerCase();
+            return q.includes(query) || a.includes(query) || t.includes(query);
+        });
+        renderKbList(filtered);
+    }
+
+    function escapeHtmlKB(text) {
+        if (!text) return '';
+        const d = document.createElement('div');
+        d.textContent = text;
+        return d.innerHTML;
+    }
+
+    function renderKbList(items) {
+        const list = document.getElementById('kb-list');
+        if (!items || items.length === 0) {
+            list.innerHTML = '<div class="kb-empty">暂无参考答案，请从左侧添加</div>';
+            return;
+        }
+        list.innerHTML = items.map((item, idx) => {
+            const tags = item.tags && item.tags.length > 0
+                ? item.tags.map(t => '<span class="kb-tag">' + escapeHtmlKB(t) + '</span>').join('')
+                : '';
+            const qEsc = escapeHtmlKB(item.question || '');
+            const aEsc = escapeHtmlKB((item.answer || '').substring(0, 150));
+            const tEsc = escapeHtmlKB((item.tags || []).join(', '));
+            const qAttr = qEsc.replace(/'/g, "\\'");
+            const aAttr = aEsc.replace(/'/g, "\\'");
+            const tAttr = tEsc.replace(/'/g, "\\'");
+            return '<div class="kb-item" id="kb-item-' + idx + '">' +
+                '<div class="kb-item-view">' +
+                '  <div class="kb-item-header">' +
+                '    <span class="kb-item-num">' + (idx + 1) + '</span>' +
+                '    <span class="kb-item-q">' + qEsc + '</span>' +
+                '    <div class="kb-item-actions">' +
+                '      <button class="kb-action-btn" onclick="startEditKb(' + idx + ', \'' + qAttr + '\', \'' + aAttr + '\', \'' + tAttr + '\')" title="编辑">✏️</button>' +
+                '      <button class="kb-action-btn delete" onclick="deleteKbItem(\'' + qAttr + '\')" title="删除">🗑️</button>' +
+                '    </div>' +
+                '  </div>' +
+                '  <div class="kb-item-a">' + aEsc + '</div>' +
+                (tags ? '<div class="kb-item-tags">' + tags + '</div>' : '') +
+                '</div>' +
+                '<div class="kb-item-edit">' +
+                '  <div class="kb-item-edit-row">' +
+                '    <div class="kb-item-edit-label">问题</div>' +
+                '    <input class="kb-item-edit-input" id="kb-eq-' + idx + '" value="' + qEsc + '">' +
+                '  </div>' +
+                '  <div class="kb-item-edit-row">' +
+                '    <div class="kb-item-edit-label">答案</div>' +
+                '    <textarea class="kb-item-edit-input" id="kb-ea-' + idx + '" rows="3">' + aEsc + '</textarea>' +
+                '  </div>' +
+                '  <div class="kb-item-edit-row">' +
+                '    <div class="kb-item-edit-label">标签（逗号分隔）</div>' +
+                '    <input class="kb-item-edit-input" id="kb-et-' + idx + '" value="' + tEsc + '">' +
+                '  </div>' +
+                '  <div class="kb-item-edit-actions">' +
+                '    <button class="btn-cancel" onclick="cancelEditKb(' + idx + ')">取消</button>' +
+                '    <button class="btn-save" onclick="confirmEditKb(' + idx + ', \'' + qAttr + '\')">💾 保存</button>' +
+                '  </div>' +
+                '</div>' +
+                '</div>';
+        }).join('');
+    }
+
+    function startEditKb(idx, question, answer, tags) {
+        const item = document.getElementById('kb-item-' + idx);
+        if (item) item.classList.add('editing');
+        document.getElementById('kb-eq-' + idx).value = question;
+        document.getElementById('kb-ea-' + idx).value = answer;
+        document.getElementById('kb-et-' + idx).value = tags;
+    }
+
+    function cancelEditKb(idx) {
+        const item = document.getElementById('kb-item-' + idx);
+        if (item) item.classList.remove('editing');
+    }
+
+    async function confirmEditKb(idx, oldQuestion) {
+        const newQ = document.getElementById('kb-eq-' + idx).value.trim();
+        const newA = document.getElementById('kb-ea-' + idx).value.trim();
+        const tagsStr = document.getElementById('kb-et-' + idx).value.trim();
+        const newTags = tagsStr ? tagsStr.split(/[,，]/).map(s => s.trim()).filter(Boolean) : [];
+        if (!newQ || !newA) { alert('问题和答案不能为空'); return; }
+        try {
+            const res = await fetch('/api/vector/reference', {
+                method: 'PUT',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({oldQuestion: oldQuestion, newQuestion: newQ, newAnswer: newA, newTags})
+            });
+            const data = await res.json();
+            if (data.success) {
+                const item = document.getElementById('kb-item-' + idx);
+                if (item) item.classList.remove('editing');
+                loadKbList();
+            } else { alert('更新失败: ' + (data.error || '')); }
+        } catch(e) { alert('网络错误: ' + e.message); }
+    }
+
+    async function deleteKbItem(question) {
+        if (!confirm('确定删除这条参考答案吗？')) return;
+        try {
+            const res = await fetch('/api/vector/reference?question=' + encodeURIComponent(question), { method: 'DELETE' });
+            const data = await res.json();
+            if (data.success) loadKbList();
+            else alert('删除失败: ' + (data.error || ''));
+        } catch(e) { alert('网络错误: ' + e.message); }
+    }
+</script>
+
+</body>
+</html>

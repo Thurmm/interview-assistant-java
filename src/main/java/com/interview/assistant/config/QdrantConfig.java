@@ -22,10 +22,15 @@ public class QdrantConfig {
     @Value("${spring.ai.openai.api-key:}")
     private String defaultApiKey;
 
-    private final ObjectMapper objectMapper = new ObjectMapper();
-    private final HttpClient httpClient = HttpClient.newBuilder()
-            .connectTimeout(Duration.ofSeconds(10))
-            .build();
+    private final ObjectMapper objectMapper;
+    private final HttpClient httpClient;
+
+    public QdrantConfig(ObjectMapper objectMapper) {
+        this.objectMapper = objectMapper;
+        this.httpClient = HttpClient.newBuilder()
+                .connectTimeout(Duration.ofSeconds(10))
+                .build();
+    }
 
     public String callLlm(
             List<Map<String, String>> messages,

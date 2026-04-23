@@ -20,6 +20,8 @@ import org.springframework.stereotype.Service;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.stream.Collectors;
 
 /**
@@ -44,10 +46,20 @@ public class ConversationService {
     private final EvaluatorAgent evaluatorAgent;
     private final VectorStoreService vectorStoreService;
 
+    // ============ 内存缓存（解决高并发文件锁冲突）===========
+    private final ConcurrentHashMap<String, Conversation> convoCache = new ConcurrentHashMap<>();
+    private volatile long cacheVersion = 0;
+    /** per-conversation 互斥锁，防止同一 ID 并发操作导致状态覆盖 */
+    private final ConcurrentHashMap<String, ReentrantLock> convoLocks = new ConcurrentHashMap<>();
+
+    private ReentrantLock lockFor(String convoId) {
+        return convoLocks.computeIfAbsent(convoId, k -> new ReentrantLock());
+    }
+
     // ============ 对话查询 ============
 
     public List<Conversation> getAllConversations() {
-        return jsonFileUtil.readJsonList(CONVOS_FILE, Conversation.class, List.of());
+        return new ArrayList<>(convoCache.values());
     }
 
     public Optional<Conversation> getConversation(String id) {
@@ -117,6 +129,16 @@ public class ConversationService {
         // 构建候选人画像描述（供 Agent 使用）
         String profileSummary = buildProfileSummary(candidateProfile, position, experience);
 
+        // 如果有简历技术栈，从向量库检索5道与技能相关的题目作为技术面出题指导
+        String skillQuestionsContext = null;
+        if (candidateProfile != null && candidateProfile.getTechStack() != null && !candidateProfile.getTechStack().isEmpty()) {
+            try {
+                skillQuestionsContext = vectorStoreService.retrieveSkillQuestions(candidateProfile.getTechStack(), 5);
+            } catch (Exception e) {
+                log.warn("检索技能相关题目失败: {}", e.getMessage());
+            }
+        }
+
         // 生成第一道问题（使用 InterviewerAgent）
         String firstQuestion = interviewerAgent.generateQuestion(
                 profileSummary,
@@ -125,7 +147,8 @@ public class ConversationService {
                 InterviewPhase.OPENING,
                 1,
                 messages,
-                modelConfig
+                modelConfig,
+                skillQuestionsContext
         );
 
         String now2 = LocalDateTime.now().format(DTF);
@@ -172,8 +195,20 @@ public class ConversationService {
      * 3. 生成下一题（InterviewerAgent）
      */
     public AnswerResponse answer(String convoId, String userAnswer) {
-        Conversation convo = getConversation(convoId)
-                .orElseThrow(() -> new IllegalArgumentException("对话不存在"));
+        ReentrantLock lock = lockFor(convoId);
+        lock.lock();
+        try {
+            return answerInner(convoId, userAnswer);
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    private AnswerResponse answerInner(String convoId, String userAnswer) {
+        Conversation convo = convoCache.get(convoId);
+        if (convo == null) {
+            throw new IllegalArgumentException("对话不存在");
+        }
 
         ModelConfig modelConfig = extractModelConfig(convo);
         String now = LocalDateTime.now().format(DTF);
@@ -197,6 +232,19 @@ public class ConversationService {
                 retrievedContext = vectorStoreService.retrieveReferenceAnswer(currentQuestion, 2);
             } catch (Exception e) {
                 log.warn("RAG 检索失败，不影响主流程: {}", e.getMessage());
+            }
+        }
+
+        // 如果有简历技术栈，从向量库检索技能相关题目作为技术面出题指导
+        String skillQuestionsContext = null;
+        if (convo.getCandidateProfile() != null
+                && convo.getCandidateProfile().getTechStack() != null
+                && !convo.getCandidateProfile().getTechStack().isEmpty()) {
+            try {
+                skillQuestionsContext = vectorStoreService.retrieveSkillQuestions(
+                        convo.getCandidateProfile().getTechStack(), 5);
+            } catch (Exception e) {
+                log.warn("检索技能相关题目失败: {}", e.getMessage());
             }
         }
 
@@ -257,7 +305,8 @@ public class ConversationService {
                     nextPhase,
                     questionCount + 1,
                     convo.getMessages(),
-                    modelConfig
+                    modelConfig,
+                    skillQuestionsContext
             );
 
             convo.getMessages().add(Message.builder()
@@ -272,15 +321,8 @@ public class ConversationService {
 
         convo.setUpdatedAt(LocalDateTime.now().format(DTF));
 
-        // 持久化
-        List<Conversation> convos = new ArrayList<>(getAllConversations());
-        for (int i = 0; i < convos.size(); i++) {
-            if (convos.get(i).getId().equals(convoId)) {
-                convos.set(i, convo);
-                break;
-            }
-        }
-        saveConversations(convos);
+        // 持久化（已持有锁，直接写）
+        saveConversations(convoCache.values().stream().toList());
 
         // 构建返回（含分维度评分）
         AnswerResponse.DimensionScores dimScores = AnswerResponse.DimensionScores.builder()
@@ -308,33 +350,39 @@ public class ConversationService {
     // ============ 会话控制 ============
 
     public void stopConversation(String convoId, List<Message> messages, String status) {
-        List<Conversation> convos = getAllConversations();
-        for (int i = 0; i < convos.size(); i++) {
-            if (convos.get(i).getId().equals(convoId)) {
-                convos.get(i).setMessages(messages);
-                convos.get(i).setStatus(status != null ? status : "stopped");
-                convos.get(i).setUpdatedAt(LocalDateTime.now().format(DTF));
-                break;
+        ReentrantLock lock = lockFor(convoId);
+        lock.lock();
+        try {
+            Conversation convo = convoCache.get(convoId);
+            if (convo != null) {
+                convo.setMessages(messages);
+                convo.setStatus(status != null ? status : "stopped");
+                convo.setUpdatedAt(LocalDateTime.now().format(DTF));
+                saveConversations(convoCache.values().stream().toList());
             }
+        } finally {
+            lock.unlock();
         }
-        saveConversations(convos);
     }
 
     public void deleteConversation(String convoId) {
-        List<Conversation> convos = getAllConversations();
-        // 删除向量数据（如果向量库已配置）
-        if (vectorStoreService.isAvailable()) {
-            try {
-                vectorStoreService.deleteResume(convoId);
-            } catch (Exception e) {
-                log.warn("删除向量数据失败: {}", convoId);
+        ReentrantLock lock = lockFor(convoId);
+        lock.lock();
+        try {
+            // 删除向量数据（如果向量库已配置）
+            if (vectorStoreService.isAvailable()) {
+                try {
+                    vectorStoreService.deleteResume(convoId);
+                } catch (Exception e) {
+                    log.warn("删除向量数据失败: {}", convoId);
+                }
             }
+            convoCache.remove(convoId);
+            cacheVersion++;
+            saveConversations(convoCache.values().stream().toList());
+        } finally {
+            lock.unlock();
         }
-
-        convos = convos.stream()
-                .filter(c -> !c.getId().equals(convoId))
-                .collect(Collectors.toList());
-        saveConversations(convos);
     }
 
     // ============ 工具方法 ============
@@ -406,10 +454,31 @@ public class ConversationService {
 
     @SuppressWarnings("unchecked")
     private void saveConversations(List<Conversation> convos) {
+        // 更新缓存
+        convoCache.clear();
+        for (Conversation c : convos) {
+            convoCache.put(c.getId(), c);
+        }
+        cacheVersion++;
+
+        // 持久化到磁盘
         List<Map<String, Object>> data = convos.stream()
                 .map(this::toMap)
                 .collect(Collectors.toList());
         jsonFileUtil.writeJson(CONVOS_FILE, data);
+    }
+
+    /**
+     * 启动时从磁盘加载缓存，解决服务重启后缓存为空的问题
+     */
+    @jakarta.annotation.PostConstruct
+    public void initCache() {
+        List<Conversation> all = jsonFileUtil.readJsonList(CONVOS_FILE, Conversation.class, List.of());
+        convoCache.clear();
+        for (Conversation c : all) {
+            convoCache.put(c.getId(), c);
+        }
+        log.info("[ConversationService] 已从磁盘加载 {} 条会话到缓存", convoCache.size());
     }
 
     @SuppressWarnings("unchecked")

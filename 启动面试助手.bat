@@ -1,13 +1,13 @@
 @echo off
 chcp 65001 >nul
 echo ======================================
-echo    AI 面试模拟助手 v1.0
+echo    AI 面试模拟助手 v2.0.0
 echo ======================================
 echo.
 echo 正在启动，请稍候...
 echo.
 
-java -jar interview-assistant-1.0.0.jar
+java -Dapp.data-dir="%~dp0data" -jar "%~dp0target\interview-assistant-2.0.0.jar"
 
 if errorlevel 1 (
     echo.

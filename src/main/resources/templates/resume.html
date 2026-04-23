@@ -1,0 +1,969 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>📄 简历解析 - AI 面试助手</title>
+    <link rel="stylesheet" href="/css/style.css">
+    <style>
+        /* Override resume-specific styles on top of style.css */
+
+        .page-container { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+
+        .page-header-bar {
+            padding: 24px 32px 0;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .page-title { font-size: 22px; font-weight: 700; color: var(--gray-900); }
+        .page-desc { font-size: 13px; color: var(--gray-500); margin-top: 4px; }
+
+        /* Tab bar */
+        .tab-bar { display: flex; gap: 4px; margin: 20px 32px 0; background: var(--gray-100); border-radius: 10px; padding: 4px; width: fit-content; }
+        .tab-btn { padding: 8px 20px; border-radius: 7px; border: none; background: transparent; color: var(--gray-500); font-size: 14px; font-weight: 500; cursor: pointer; transition: all 0.2s; }
+        .tab-btn.active { background: var(--primary); color: white; }
+        .tab-btn .badge { background: rgba(255,255,255,0.25); padding: 1px 6px; border-radius: 10px; font-size: 11px; margin-left: 4px; }
+
+        /* Main content area */
+        .resume-content { flex: 1; overflow: hidden; display: flex; flex-direction: column; }
+
+        /* Three-column grid for parse tab */
+        .resume-three-col { display: grid; grid-template-columns: 320px 1fr 280px; gap: 20px; padding: 20px 32px; flex: 1; min-height: 0; }
+        @media (max-width: 1100px) { .resume-three-col { grid-template-columns: 1fr; overflow-y: auto; } }
+
+        /* Cards */
+        .resume-card { background: white; border-radius: 12px; padding: 22px; box-shadow: var(--shadow); display: flex; flex-direction: column; gap: 14px; }
+        .card-title { font-size: 14px; font-weight: 600; color: var(--gray-900); display: flex; align-items: center; gap: 8px; }
+
+        /* Upload area */
+        .upload-area { border: 2px dashed var(--gray-300); border-radius: 10px; padding: 28px 16px; text-align: center; cursor: pointer; transition: all 0.2s; position: relative; }
+        .upload-area:hover, .upload-area.dragover { border-color: var(--primary); background: #f0f4ff; }
+        .upload-area input[type="file"] { position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; height: 100%; }
+        .upload-icon { font-size: 36px; margin-bottom: 8px; }
+        .upload-text { font-size: 13px; color: var(--gray-500); }
+        .upload-text strong { color: var(--primary); }
+        .upload-hint { font-size: 11px; color: var(--gray-400); margin-top: 6px; }
+        .file-info { padding: 8px 12px; background: var(--gray-50); border-radius: 8px; display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--gray-700); }
+        .file-info .file-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .file-info .clear-btn { color: var(--gray-400); cursor: pointer; font-size: 15px; line-height: 1; }
+        .file-info .clear-btn:hover { color: var(--danger); }
+        .parse-btn { width: 100%; padding: 11px; background: var(--primary); color: white; border: none; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer; transition: background 0.2s; }
+        .parse-btn:hover { background: var(--primary-hover); }
+        .parse-btn:disabled { background: var(--gray-300); cursor: not-allowed; }
+        .parse-btn.loading { position: relative; color: transparent; }
+        .parse-btn.loading::after { content: '解析中…'; position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: white; font-size: 14px; }
+        .api-key-note { padding: 10px 12px; background: #fef3c7; border-radius: 8px; font-size: 12px; color: #92400e; }
+        .api-key-note a { color: #92400e; font-weight: 600; text-decoration: underline; }
+
+        /* Result panel */
+        .result-placeholder { text-align: center; padding: 50px 20px; color: var(--gray-400); flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; }
+        .result-placeholder .icon { font-size: 52px; opacity: 0.5; }
+        .result-placeholder p { font-size: 14px; }
+        .parse-progress { display: none; flex-direction: column; align-items: center; justify-content: center; flex: 1; padding: 40px 20px; gap: 16px; }
+        .parse-progress.show { display: flex; }
+        .parse-progress-icon { font-size: 44px; animation: bounce 1.2s ease-in-out infinite; }
+        @keyframes bounce { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-8px); } }
+        .parse-progress-text { font-size: 15px; color: var(--gray-600); font-weight: 500; }
+        .parse-progress-sub { font-size: 12px; color: var(--gray-400); }
+        .parse-progress-bar { width: 200px; height: 4px; background: var(--gray-200); border-radius: 2px; overflow: hidden; }
+        .parse-progress-fill { height: 100%; background: linear-gradient(90deg, var(--primary), #7c3aed); border-radius: 2px; transition: width 0.4s ease; animation: stripe 1.5s linear infinite; background-size: 30px 30px; background-image: linear-gradient(45deg, rgba(255,255,255,0.2) 25%, transparent 25%, transparent 50%, rgba(255,255,255,0.2) 50%, rgba(255,255,255,0.2) 75%, transparent 75%, transparent); }
+        @keyframes stripe { from { background-position: 0 0; } to { background-position: 30px 0; } }
+        .analysis-result { display: none; flex-direction: column; gap: 0; flex: 1; overflow-y: auto; }
+        .analysis-result.show { display: flex; }
+        .result-header { display: flex; align-items: center; justify-content: space-between; padding: 16px 20px; border-bottom: 1px solid var(--gray-100); flex-wrap: wrap; gap: 8px; }
+        .result-title { font-size: 14px; font-weight: 600; color: var(--gray-900); }
+        .result-actions { display: flex; gap: 8px; align-items: center; }
+        .toggle-json-btn { font-size: 12px; padding: 4px 10px; background: var(--gray-100); color: var(--gray-500); border: none; border-radius: 6px; cursor: pointer; }
+        .toggle-json-btn:hover { background: var(--gray-200); }
+
+        .result-body { padding: 16px 20px; overflow-y: auto; flex: 1; }
+        .section-label { font-size: 11px; font-weight: 600; color: var(--gray-400); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; margin-top: 16px; }
+        .section-label:first-of-type { margin-top: 0; }
+        .info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+        .info-item { padding: 10px 12px; background: var(--gray-50); border-radius: 8px; }
+        .info-item .label { font-size: 11px; color: var(--gray-400); margin-bottom: 3px; }
+        .info-item .value { font-size: 13px; font-weight: 500; color: var(--gray-900); }
+        .tag-list { display: flex; flex-wrap: wrap; gap: 6px; }
+        .tag { padding: 4px 10px; background: #dbeafe; color: #1e40af; border-radius: 20px; font-size: 12px; font-weight: 500; display: flex; align-items: center; gap: 4px; }
+        .tag .tag-remove { background: none; border: none; cursor: pointer; color: inherit; font-size: 13px; line-height: 1; padding: 0; margin-left: 2px; }
+        .tag.dark { background: #d1fae5; color: #065f46; }
+        .tech-tag-input-wrap { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; background: var(--gray-50); border: 1px solid var(--gray-200); border-radius: 8px; padding: 6px 8px; min-height: 38px; }
+        .tech-tag-input-wrap:focus-within { border-color: var(--primary); }
+        .exp-list { display: flex; flex-direction: column; gap: 8px; }
+        .exp-item { padding: 10px 12px; background: var(--gray-50); border-radius: 8px; border-left: 3px solid var(--primary); }
+        .exp-item p { font-size: 12px; color: var(--gray-700); line-height: 1.6; }
+        .proj-item { background: var(--gray-50); border-radius: 10px; padding: 14px 16px; border-left: 3px solid #7c3aed; display: flex; flex-direction: column; gap: 6px; }
+        .proj-name { font-size: 14px; font-weight: 700; color: var(--gray-900); }
+        .proj-meta { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+        .proj-label { font-weight: 600; color: var(--gray-500); min-width: 52px; }
+        .proj-desc { font-size: 12.5px; color: var(--gray-600); line-height: 1.6; margin-top: 2px; }
+        .summary-box { padding: 12px 14px; background: #eff6ff; border-radius: 8px; border: 1px solid #bfdbfe; }
+        .summary-box p { font-size: 13px; color: #1e40af; line-height: 1.7; }
+        .json-box { display: none; background: #1f2937; border-radius: 8px; padding: 16px; overflow: auto; max-height: 400px; margin-top: 12px; }
+        .json-box.show { display: block; }
+        .json-box pre { margin: 0; font-family: 'Courier New', monospace; font-size: 12px; color: #e5e7eb; line-height: 1.6; white-space: pre-wrap; word-break: break-all; }
+        .error-box { padding: 14px; background: #fef2f2; border: 1px solid #fecaca; border-radius: 8px; color: #991b1b; font-size: 13px; }
+
+        /* Debug panel */
+        .debug-panel { background: #1e1e1e; border-radius: 12px; padding: 14px 18px; margin-top: 16px; }
+        .debug-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+        .debug-header .result-title { color: #e5e7eb; font-size: 13px; font-weight: 600; }
+        .debug-tabs { display: flex; gap: 6px; margin-bottom: 10px; }
+        .debug-tab { padding: 5px 12px; border-radius: 6px; font-size: 12px; cursor: pointer; border: none; background: #374151; color: #d1d5db; }
+        .debug-tab.active { background: var(--primary); color: white; }
+        .debug-content { max-height: 300px; overflow-y: auto; }
+        .debug-tab-content { display: none; }
+        .debug-tab-content.active { display: block; }
+        #debug-raw-text, #debug-llm-text, #debug-json-text { font-family: 'Courier New', monospace; font-size: 11.5px; line-height: 1.6; white-space: pre-wrap; word-break: break-all; margin: 0; color: #a8ddb5; }
+        #debug-llm-text { color: #ce9178; }
+        #debug-json-text { color: #9cdcfe; }
+
+        /* Saved list */
+        .saved-list { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
+        .saved-empty { text-align: center; padding: 40px 16px; color: var(--gray-400); font-size: 13px; }
+        .saved-item { border: 1px solid var(--gray-200); border-radius: 8px; padding: 12px; cursor: pointer; transition: all 0.2s; }
+        .saved-item:hover { border-color: var(--primary); background: var(--gray-50); }
+        .saved-item.active { border-color: var(--primary); background: #f0f4ff; }
+        .saved-item-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+        .saved-item-name { font-size: 13px; font-weight: 600; color: var(--gray-900); }
+        .saved-item-date { font-size: 11px; color: var(--gray-400); }
+        .saved-item-tags { display: flex; flex-wrap: wrap; gap: 4px; }
+        .saved-item-tag { padding: 2px 7px; background: #dbeafe; color: #1e40af; border-radius: 10px; font-size: 10px; }
+        .saved-item-actions { display: flex; gap: 6px; margin-top: 8px; justify-content: flex-end; }
+
+        /* Saved tab panel */
+        #panel-saved { display: none; flex-direction: column; flex: 1; overflow: hidden; padding: 20px 32px; }
+        #panel-saved.show { display: flex; }
+        .saved-full-list { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
+
+        /* Edit modal */
+        .modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.45); z-index: 1000; align-items: center; justify-content: center; padding: 20px; }
+        .modal-overlay.show { display: flex; }
+        .modal { background: white; border-radius: 14px; width: 100%; max-width: 700px; max-height: 90vh; overflow-y: auto; padding: 28px; }
+        .modal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; gap: 12px; }
+        .modal-title { font-size: 17px; font-weight: 700; color: var(--gray-900); flex: 1; }
+        .modal-header-actions { display: flex; gap: 8px; align-items: center; }
+        .modal-close { background: none; border: none; font-size: 20px; cursor: pointer; color: var(--gray-400); line-height: 1; padding: 4px 8px; border-radius: 6px; }
+        .modal-close:hover { background: var(--gray-100); color: var(--gray-700); }
+        .modal-form { display: flex; flex-direction: column; gap: 14px; }
+        .form-full { grid-column: 1 / -1; }
+        .form-group { margin-bottom: 0; }
+        .form-label { display: block; font-size: 12px; font-weight: 600; color: var(--gray-700); margin-bottom: 5px; }
+        .form-input, .form-textarea { width: 100%; padding: 8px 12px; border: 1px solid var(--gray-300); border-radius: 7px; font-size: 13px; color: var(--gray-900); font-family: inherit; box-sizing: border-box; }
+        .form-input:focus, .form-textarea:focus { outline: none; border-color: var(--primary); }
+        .form-textarea { resize: vertical; min-height: 70px; }
+        .modal-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--gray-200); }
+        .proj-card { border: 1px solid var(--gray-200); border-radius: 10px; padding: 14px; background: var(--gray-50); display: flex; flex-direction: column; gap: 8px; }
+        .proj-card-header { display: flex; justify-content: space-between; align-items: center; }
+        .proj-card-title { font-size: 13px; font-weight: 700; color: var(--gray-800); }
+        .proj-card-remove { font-size: 12px; color: var(--gray-400); cursor: pointer; background: none; border: none; padding: 4px 8px; border-radius: 6px; }
+        .proj-card-remove:hover { background: #fee2e2; color: var(--danger); }
+        .proj-card-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+        .proj-card input, .proj-card textarea { font-size: 12.5px; padding: 6px 10px; }
+        .proj-card textarea { min-height: 56px; resize: vertical; }
+        .proj-add-btn { width: 100%; padding: 8px; border: 2px dashed var(--gray-300); border-radius: 8px; background: none; color: var(--gray-500); font-size: 13px; cursor: pointer; transition: all 0.2s; }
+        .proj-add-btn:hover { border-color: var(--primary); color: var(--primary); background: #eff6ff; }
+
+        /* Buttons */
+        .btn { padding: 8px 16px; border-radius: 7px; font-size: 13px; font-weight: 500; cursor: pointer; border: none; transition: all 0.2s; display: inline-flex; align-items: center; gap: 6px; text-decoration: none; }
+        .btn-primary { background: var(--primary); color: white; }
+        .btn-primary:hover { background: var(--primary-hover); }
+        .btn-success { background: var(--success); color: white; }
+        .btn-success:hover { background: #059669; }
+        .btn-secondary { background: var(--gray-100); color: var(--gray-700); }
+        .btn-secondary:hover { background: var(--gray-200); }
+        .btn-danger { background: var(--danger); color: white; }
+        .btn-danger:hover { background: #dc2626; }
+        .btn-sm { padding: 5px 10px; font-size: 12px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Sidebar (same as index.html) -->
+        <aside class="sidebar">
+            <div class="logo">🎯 面试助手</div>
+            <nav>
+                <a href="/" class="nav-item" id="nav-chat"><span class="icon">💬</span> 面试对话</a>
+                <a href="/history" class="nav-item" id="nav-history"><span class="icon">📋</span> 历史记录</a>
+                <a href="/settings" class="nav-item" id="nav-settings"><span class="icon">⚙️</span> 面试设置</a>
+                <a href="/resume" class="nav-item active" id="nav-resume"><span class="icon">📄</span> 简历解析</a>
+                <a href="/knowledge" class="nav-item" id="nav-kb"><span class="icon">📚</span> 知识库</a>
+            </nav>
+            <div class="sidebar-footer"><small>面试模拟助手 v2.0</small></div>
+        </aside>
+
+        <!-- Main content -->
+        <main class="main-content">
+            <div class="page-container">
+                <div class="page-header-bar">
+                    <div>
+                        <div class="page-title">📄 简历解析</div>
+                        <div class="page-desc">上传简历，AI 自动提取关键信息并生成候选人画像</div>
+                    </div>
+                </div>
+
+                <!-- Tab bar -->
+                <div class="tab-bar">
+                    <button class="tab-btn active" id="tab-parse" onclick="switchTab('parse')">📤 解析简历</button>
+                    <button class="tab-btn" id="tab-saved" onclick="switchTab('saved')">📋 已保存简历 <span class="badge" id="saved-count-badge">0</span></button>
+                </div>
+
+                <div class="resume-content">
+                    <!-- ========== Tab: 解析简历 ========== -->
+                    <div id="panel-parse" class="resume-three-col">
+                        <!-- Left: Upload -->
+                        <div class="resume-card">
+                            <div class="card-title">📂 上传简历</div>
+                            <div class="upload-area" id="upload-area">
+                                <input type="file" id="file-input" accept=".pdf,.docx,.txt">
+                                <div class="upload-icon">📎</div>
+                                <div class="upload-text">拖拽或<strong>点击选择</strong>文件</div>
+                                <div class="upload-hint">支持 PDF / DOCX / TXT，单个 ≤ 10MB</div>
+                            </div>
+                            <div class="file-info" id="file-info" style="display:none;">
+                                <span class="file-name" id="file-name"></span>
+                                <span class="clear-btn" onclick="clearFile()">✕</span>
+                            </div>
+                            <button class="parse-btn" id="parse-btn" onclick="parseResume()" disabled>解析简历</button>
+                            <div class="api-key-note" id="api-key-note" style="display:none;">
+                                ⚠️ 请先到 <a href="/settings">设置页面</a> 配置大模型 API Key
+                            </div>
+                        </div>
+
+                        <!-- Center: Result -->
+                        <div class="resume-card" style="overflow:hidden;display:flex;flex-direction:column;">
+                            <div class="result-placeholder" id="placeholder">
+                                <div class="icon">📋</div>
+                                <p>上传简历后，解析结果将显示在这里</p>
+                            </div>
+
+                            <div class="parse-progress" id="parse-progress">
+                                <div class="parse-progress-icon">🔍</div>
+                                <div class="parse-progress-text" id="parse-progress-text">正在解析简历…</div>
+                                <div class="parse-progress-sub" id="parse-progress-sub">AI 分析中，请稍候</div>
+                                <div class="parse-progress-bar"><div class="parse-progress-fill" id="parse-progress-fill" style="width:30%"></div></div>
+                            </div>
+
+                            <div class="analysis-result" id="result-area">
+                                <div class="result-header">
+                                    <div class="result-title">✅ 解析结果 <span id="edit-mode-hint" style="font-size:11px;color:var(--gray-400);font-weight:400;"></span></div>
+                                    <div class="result-actions">
+                                        <button class="btn btn-secondary btn-sm" id="toggle-edit-btn" onclick="toggleEditMode()">✏️ 编辑</button>
+                                        <button class="btn btn-success btn-sm" id="save-edit-btn" onclick="showSaveModal()" style="display:none;">💾 保存简历</button>
+                                        <button class="btn btn-primary btn-sm" id="save-changes-btn" onclick="saveChanges()" style="display:none;">💾 保存修改</button>
+                                        <button class="toggle-json-btn" id="toggle-json-btn" onclick="toggleJson()">JSON</button>
+                                        <button class="toggle-json-btn" id="toggle-debug-btn" onclick="toggleDebug()">调试信息</button>
+                                    </div>
+                                </div>
+                                <div class="result-body">
+                                    <div class="section-label">基本信息</div>
+                                    <div class="info-grid" id="info-grid-display">
+                                        <div class="info-item"><div class="label">姓名</div><div class="value" id="res-name">-</div></div>
+                                        <div class="info-item"><div class="label">手机</div><div class="value" id="res-phone">-</div></div>
+                                        <div class="info-item"><div class="label">邮箱</div><div class="value" id="res-email">-</div></div>
+                                        <div class="info-item"><div class="label">学历 / 工作年限</div><div class="value" id="res-edu">-</div></div>
+                                    </div>
+                                    <div class="info-grid-edit" id="info-grid-edit" style="display:none;gap:10px;">
+                                        <div class="info-item"><div class="label">姓名</div><input class="form-input" id="edit-res-name" placeholder="姓名"></div>
+                                        <div class="info-item"><div class="label">手机</div><input class="form-input" id="edit-res-phone" placeholder="手机号"></div>
+                                        <div class="info-item"><div class="label">邮箱</div><input class="form-input" id="edit-res-email" placeholder="邮箱"></div>
+                                        <div class="info-item"><div class="label">学历 / 工作年限</div><input class="form-input" id="edit-res-edu" placeholder="学历 / 工作年限"></div>
+                                    </div>
+                                    <div class="section-label">技术栈</div>
+                                    <div class="tag-list" id="res-tech"></div>
+                                    <div id="res-tech-edit" style="display:none;margin-top:6px;">
+                                        <div id="tech-tag-input-area" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;"></div>
+                                        <input class="form-input" id="tech-input" placeholder="输入技术后按回车添加，如：Java" style="margin-top:8px;font-size:12px;padding:6px 10px;" onkeydown="if(event.key==='Enter'){event.preventDefault();addTechTag();}">
+                                    </div>
+                                    <div class="section-label">工作经历</div>
+                                    <div class="exp-list" id="res-work"></div>
+                                    <textarea class="form-input" id="edit-res-work" style="display:none;margin-top:6px;font-size:12.5px;padding:8px 10px;min-height:60px;resize:vertical;" placeholder="每条经历一行：公司 | 职位 | 时间"></textarea>
+                                    <div class="section-label">项目经历</div>
+                                    <div id="res-proj-display"></div>
+                                    <div id="res-proj-edit" style="display:none;margin-top:6px;"></div>
+                                    <button class="proj-add-btn" id="add-proj-btn-edit" style="display:none;margin-top:8px;" onclick="addProjEditCard()">➕ 添加项目</button>
+                                    <div class="section-label">候选人画像</div>
+                                    <div class="summary-box" id="res-summary-display"><p id="res-summary-text">-</p></div>
+                                    <textarea class="form-input" id="edit-res-summary" style="display:none;margin-top:6px;font-size:12.5px;padding:8px 10px;min-height:80px;resize:vertical;background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;" placeholder="候选人画像描述..."></textarea>
+                                    <div class="json-box" id="json-box"><pre id="json-raw"></pre></div>
+                                </div>
+                            </div>
+
+                            <!-- Debug -->
+                            <div class="debug-panel" id="debug-panel" style="display:none;margin:0 20px 20px;border-radius:8px;">
+                                <div class="debug-header">
+                                    <div class="result-title">🐛 Debug 信息</div>
+                                </div>
+                                <div class="debug-tabs">
+                                    <button class="debug-tab active" onclick="switchDebugTab('raw')">原始文本</button>
+                                    <button class="debug-tab" onclick="switchDebugTab('llm')">LLM 返回</button>
+                                    <button class="debug-tab" onclick="switchDebugTab('json')">完整 JSON</button>
+                                </div>
+                                <div class="debug-content">
+                                    <div id="debug-raw" class="debug-tab-content active"><pre id="debug-raw-text">-</pre></div>
+                                    <div id="debug-llm" class="debug-tab-content"><pre id="debug-llm-text">-</pre></div>
+                                    <div id="debug-json" class="debug-tab-content"><pre id="debug-json-text">-</pre></div>
+                                </div>
+                            </div>
+
+                            <div class="error-box" id="error-box" style="display:none;margin:0 20px 20px;"></div>
+                        </div>
+
+                        <!-- Right: Saved preview -->
+                        <div class="resume-card">
+                            <div class="card-title">🗂️ 最近保存</div>
+                            <div class="saved-list" id="mini-saved-list">
+                                <div class="saved-empty">暂无已保存简历</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- ========== Tab: 已保存简历 ========== -->
+                    <div id="panel-saved">
+                        <div style="font-size:14px;color:var(--gray-500);margin-bottom:16px;">共 <strong id="saved-total-count">0</strong> 条简历</div>
+                        <div class="saved-full-list" id="full-saved-list">
+                            <div class="saved-empty">暂无已保存简历</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+<!-- Edit Modal -->
+<div class="modal-overlay" id="edit-modal">
+    <div class="modal">
+        <div class="modal-header" style="flex-direction:column;gap:10px;align-items:stretch;">
+            <div style="display:flex;align-items:center;justify-content:space-between;">
+                <div class="modal-title" id="modal-title">💾 保存简历</div>
+                <button class="modal-close" onclick="closeEditModal()">×</button>
+            </div>
+            <div class="modal-header-actions">
+                <button class="btn btn-secondary btn-sm" onclick="closeEditModal()">取消</button>
+                <button class="btn btn-primary btn-sm" id="modal-save-btn" onclick="confirmSave()">💾 保存</button>
+            </div>
+        </div>
+        <div class="modal-form">
+            <div class="form-group">
+                <label class="form-label">姓名 *</label>
+                <input class="form-input" id="edit-name" placeholder="候选人姓名">
+            </div>
+            <div class="form-group">
+                <label class="form-label">邮箱</label>
+                <input class="form-input" id="edit-email" placeholder="example@domain.com">
+            </div>
+            <div class="form-group">
+                <label class="form-label">手机</label>
+                <input class="form-input" id="edit-phone" placeholder="138xxxx8888">
+            </div>
+            <div class="form-group">
+                <label class="form-label">学历 / 工作年限</label>
+                <input class="form-input" id="edit-edu" placeholder="本科 / 3年">
+            </div>
+            <div class="form-group form-full">
+                <label class="form-label">技术栈（逗号分隔）</label>
+                <input class="form-input" id="edit-tech" placeholder="Java, Spring Boot, MySQL, Redis">
+            </div>
+            <div class="form-group form-full">
+                <label class="form-label">工作经历（每条一行，公司 | 职位 | 时间）</label>
+                <textarea class="form-textarea" id="edit-work" placeholder="阿里巴巴 | Java工程师 | 2021.03-2023.08&#10;字节跳动 | 高级后端开发 | 2023.09-至今" style="min-height:80px;"></textarea>
+            </div>
+            <div class="form-group form-full">
+                <label class="form-label">项目经历</label>
+                <div id="proj-cards-container"></div>
+                <button class="proj-add-btn" onclick="addProjCard()">➕ 添加项目</button>
+            </div>
+            <div class="form-group form-full">
+                <label class="form-label">候选人画像</label>
+                <textarea class="form-textarea" id="edit-summary" placeholder="简要描述技术优势、项目经验和擅长方向..." style="min-height:90px;"></textarea>
+            </div>
+            <div class="form-group">
+                <label class="form-label">备注</label>
+                <input class="form-input" id="edit-remark" placeholder="标签或备注">
+            </div>
+        </div>
+        <div class="modal-actions" style="display:none;"></div>
+    </div>
+</div>
+
+<script>
+    let selectedFile = null;
+    let currentResult = null;
+    let savedList = [];
+    let editingId = null;
+
+    // Sidebar nav active
+    document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
+    document.getElementById('nav-resume').classList.add('active');
+
+    // Tab switch
+    function switchTab(tab) {
+        document.getElementById('tab-parse').classList.toggle('active', tab === 'parse');
+        document.getElementById('tab-saved').classList.toggle('active', tab === 'saved');
+        document.getElementById('panel-parse').style.display = tab === 'parse' ? '' : 'none';
+        document.getElementById('panel-saved').classList.toggle('show', tab === 'saved');
+        if (tab === 'saved') loadSavedList();
+    }
+
+    // File handling
+    const fileInput = document.getElementById('file-input');
+    const uploadArea = document.getElementById('upload-area');
+    uploadArea.addEventListener('dragover', e => { e.preventDefault(); uploadArea.classList.add('dragover'); });
+    uploadArea.addEventListener('dragleave', e => { e.preventDefault(); uploadArea.classList.remove('dragover'); });
+    uploadArea.addEventListener('drop', e => { e.preventDefault(); uploadArea.classList.remove('dragover'); if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]); });
+    fileInput.addEventListener('change', () => { if (fileInput.files.length) handleFile(fileInput.files[0]); });
+
+    function handleFile(file) {
+        const ext = file.name.toLowerCase();
+        if (!ext.endsWith('.pdf') && !ext.endsWith('.docx') && !ext.endsWith('.txt')) { alert('仅支持 PDF、DOCX、TXT'); return; }
+        if (file.size > 10 * 1024 * 1024) { alert('文件大小不能超过 10MB'); return; }
+        selectedFile = file;
+        document.getElementById('file-name').textContent = file.name;
+        document.getElementById('file-info').style.display = 'flex';
+        document.getElementById('parse-btn').disabled = false;
+        document.getElementById('placeholder').style.display = 'none';
+        document.getElementById('parse-progress').classList.remove('show');
+        document.getElementById('result-area').classList.remove('show');
+        document.getElementById('error-box').style.display = 'none';
+    }
+
+    function clearFile() {
+        selectedFile = null;
+        fileInput.value = '';
+        document.getElementById('file-info').style.display = 'none';
+        document.getElementById('parse-btn').disabled = true;
+        document.getElementById('placeholder').style.display = '';
+        document.getElementById('parse-progress').classList.remove('show');
+        document.getElementById('result-area').classList.remove('show');
+        document.getElementById('error-box').style.display = 'none';
+        document.getElementById('json-box').classList.remove('show');
+        document.getElementById('toggle-json-btn').textContent = '查看 JSON';
+        currentResult = null;
+    }
+
+    function showProgress(text, sub) {
+        document.getElementById('placeholder').style.display = 'none';
+        document.getElementById('parse-progress').classList.add('show');
+        document.getElementById('parse-progress-text').textContent = text || '正在解析简历…';
+        document.getElementById('parse-progress-sub').textContent = sub || 'AI 分析中，请稍候';
+        document.getElementById('parse-progress-fill').style.width = '30%';
+        setTimeout(() => { document.getElementById('parse-progress-fill').style.width = '60%'; }, 800);
+        setTimeout(() => { document.getElementById('parse-progress-fill').style.width = '80%'; }, 2500);
+    }
+
+    function hideProgress() {
+        document.getElementById('parse-progress').classList.remove('show');
+    }
+
+    async function parseResume() {
+        if (!selectedFile) return;
+        const btn = document.getElementById('parse-btn');
+        btn.disabled = true;
+        btn.classList.add('loading');
+        document.getElementById('error-box').style.display = 'none';
+        document.getElementById('result-area').classList.remove('show');
+        document.getElementById('json-box').classList.remove('show');
+        showProgress('正在解析简历…', 'AI 分析中，请稍候');
+
+        const formData = new FormData();
+        formData.append('file', selectedFile);
+
+        try {
+            const res = await fetch('/api/resume/upload', { method: 'POST', body: formData });
+            let data;
+            try {
+                data = await res.json();
+            } catch {
+                hideProgress();
+                const errBox = document.getElementById('error-box');
+                errBox.textContent = '❌ 服务器返回了无效的响应（非 JSON），请检查后端日志';
+                errBox.style.display = 'block';
+                return;
+            }
+            if (!res.ok || data.error) {
+                throw new Error(data.error || ('HTTP 错误 ' + res.status + '，请检查 API Key 和网络连接'));
+            }
+            document.getElementById('parse-progress-fill').style.width = '100%';
+            hideProgress();
+            currentResult = data;
+            renderResult(data);
+        } catch (e) {
+            hideProgress();
+            const errBox = document.getElementById('error-box');
+            errBox.textContent = '❌ 解析失败: ' + e.message;
+            errBox.style.display = 'block';
+            document.getElementById('result-area').classList.remove('show');
+        } finally {
+            btn.disabled = false;
+            btn.classList.remove('loading');
+            btn.textContent = '';
+        }
+    }
+
+    function renderResult(data) {
+        console.log('[renderResult] data:', JSON.stringify(data));
+        document.getElementById('result-area').classList.add('show');
+        document.getElementById('error-box').style.display = 'none';
+
+        $('res-name').textContent = data.name || '-';
+        $('res-phone').textContent = data.phone || '-';
+        $('res-email').textContent = data.email || '-';
+        $('res-edu').textContent = (data.education || '-') + (data.workExperience ? ' / ' + data.workExperience : '');
+
+        const techEl = document.getElementById('res-tech');
+        techEl.innerHTML = '';
+        (data.techStack || []).forEach(t => { const s = document.createElement('span'); s.className = 'tag'; s.textContent = t; techEl.appendChild(s); });
+        if (!techEl.children.length) techEl.innerHTML = '<span class="tag dark">未识别到技术栈</span>';
+
+        const workEl = document.getElementById('res-work');
+        workEl.innerHTML = '';
+        (data.workHistory || []).forEach(w => { const d = document.createElement('div'); d.className = 'exp-item'; d.innerHTML = '<p>' + escapeHtml(w) + '</p>'; workEl.appendChild(d); });
+        if (!workEl.children.length) workEl.innerHTML = '<div class="exp-item"><p>未识别到工作经历</p></div>';
+
+        const projEl = document.getElementById('res-proj-display');
+        projEl.innerHTML = '';
+        (data.projectHistory || []).forEach(p => {
+            const d = document.createElement('div');
+            d.className = 'proj-item';
+            if (typeof p === 'object' && p !== null) {
+                const name = p.project_name ? '<div class="proj-name">📦 ' + escapeHtml(p.project_name) + '</div>' : '';
+                const role = p.role ? '<div class="proj-meta"><span class="proj-label">👤 角色</span><span>' + escapeHtml(p.role) + '</span></div>' : '';
+                const tech = p.tech_stack ? '<div class="proj-meta"><span class="proj-label">🛠️ 技术栈</span><span>' + escapeHtml(p.tech_stack) + '</span></div>' : '';
+                const desc = p.description ? '<div class="proj-desc">' + escapeHtml(p.description) + '</div>' : '';
+                d.innerHTML = name + role + tech + desc;
+            } else {
+                d.innerHTML = '<div class="proj-name">📦 ' + escapeHtml(String(p)) + '</div>';
+            }
+            projEl.appendChild(d);
+        });
+        if (!projEl.children.length) projEl.innerHTML = '<div class="exp-item"><p>未识别到项目经历</p></div>';
+
+        $('res-summary-text').textContent = data.profileSummary || '-';
+        document.getElementById('json-raw').textContent = JSON.stringify(data, null, 2);
+        document.getElementById('debug-panel').style.display = 'none';
+        document.getElementById('debug-raw-text').textContent = data.rawText || '(无)';
+        document.getElementById('debug-llm-text').textContent = data.llmRawResponse || '(无)';
+        document.getElementById('debug-json-text').textContent = JSON.stringify(data, null, 2);
+        switchDebugTab('raw');
+
+        loadSavedList();
+        // Reset to display mode
+        setDisplayMode(false);
+    }
+
+    let editMode = false;
+
+    function $(id) { var el = document.getElementById(id); return el || { style: {}, textContent: '', value: '', classList: { toggle: function(){} } }; }
+
+    function setDisplayMode(display) {
+        editMode = display;
+        $('info-grid-display').style.display = display ? 'none' : '';
+        $('info-grid-edit').style.display = display ? '' : 'none';
+        $('res-tech').style.display = display ? 'none' : '';
+        $('res-tech-edit').style.display = display ? '' : 'none';
+        $('res-work').style.display = display ? 'none' : '';
+        $('edit-res-work').style.display = display ? '' : 'none';
+        $('res-proj-display').style.display = display ? 'none' : '';
+        $('res-proj-edit').style.display = display ? '' : 'none';
+        $('add-proj-btn-edit').style.display = display ? '' : 'none';
+        $('res-summary-display').style.display = display ? 'none' : '';
+        $('edit-res-summary').style.display = display ? '' : 'none';
+        $('save-btn').style.display = display ? '' : 'none';
+        $('save-edit-btn').style.display = display ? 'none' : '';
+        $('save-changes-btn').style.display = display ? '' : 'none';
+        $('toggle-edit-btn').textContent = display ? '✏️ 编辑中' : '✏️ 编辑';
+        $('edit-mode-hint').textContent = display ? '（编辑模式）' : '';
+    }
+
+    function toggleEditMode() {
+        if (!editMode) {
+            // Switch to edit mode - populate edit fields from currentResult
+            if (!currentResult) return;
+            document.getElementById('edit-res-name').value = currentResult.name || '';
+            document.getElementById('edit-res-phone').value = currentResult.phone || '';
+            document.getElementById('edit-res-email').value = currentResult.email || '';
+            document.getElementById('edit-res-edu').value = (currentResult.education || '') + (currentResult.workExperience ? ' / ' + currentResult.workExperience : '');
+            // Tech tags
+            renderTechEditTags();
+            // Work
+            document.getElementById('edit-res-work').value = (currentResult.workHistory || []).join('\n');
+            // Project cards
+            renderProjEditCards();
+            // Summary
+            document.getElementById('edit-res-summary').value = currentResult.profileSummary || '';
+            setDisplayMode(true);
+        } else {
+            // Cancel edit - revert
+            setDisplayMode(false);
+        }
+    }
+
+    function saveChanges() {
+        if (!currentResult) return;
+        currentResult.name = document.getElementById('edit-res-name').value.trim();
+        currentResult.phone = document.getElementById('edit-res-phone').value.trim();
+        currentResult.email = document.getElementById('edit-res-email').value.trim();
+        const eduParts = document.getElementById('edit-res-edu').value.split('/');
+        currentResult.education = eduParts[0] ? eduParts[0].trim() : '';
+        currentResult.workExperience = eduParts[1] ? eduParts[1].trim() : '';
+        currentResult.techStack = getTechTags();
+        currentResult.workHistory = document.getElementById('edit-res-work').value.split('\n').map(s => s.trim()).filter(Boolean);
+        currentResult.projectHistory = getProjEditCards();
+        currentResult.profileSummary = document.getElementById('edit-res-summary').value.trim();
+        // Re-render display
+        syncResultDisplay();
+        setDisplayMode(false);
+    }
+
+    function syncResultDisplay() {
+        if (!currentResult) return;
+        $('res-name').textContent = currentResult.name || '-';
+        $('res-phone').textContent = currentResult.phone || '-';
+        $('res-email').textContent = currentResult.email || '-';
+        $('res-edu').textContent = (currentResult.education || '-') + (currentResult.workExperience ? ' / ' + currentResult.workExperience : '');
+        const techEl = document.getElementById('res-tech');
+        techEl.innerHTML = '';
+        (currentResult.techStack || []).forEach(t => { const s = document.createElement('span'); s.className = 'tag'; s.textContent = t; techEl.appendChild(s); });
+        if (!techEl.children.length) techEl.innerHTML = '<span class="tag dark">未识别到技术栈</span>';
+        const workEl = document.getElementById('res-work');
+        workEl.innerHTML = '';
+        (currentResult.workHistory || []).forEach(w => { const d = document.createElement('div'); d.className = 'exp-item'; d.innerHTML = '<p>' + escapeHtml(w) + '</p>'; workEl.appendChild(d); });
+        if (!workEl.children.length) workEl.innerHTML = '<div class="exp-item"><p>未识别到工作经历</p></div>';
+        const projEl = document.getElementById('res-proj-display');
+        projEl.innerHTML = '';
+        (currentResult.projectHistory || []).forEach(p => {
+            const d = document.createElement('div');
+            d.className = 'proj-item';
+            if (typeof p === 'object' && p !== null) {
+                const name = p.project_name ? '<div class="proj-name">📦 ' + escapeHtml(p.project_name) + '</div>' : '';
+                const role = p.role ? '<div class="proj-meta"><span class="proj-label">👤 角色</span><span>' + escapeHtml(p.role) + '</span></div>' : '';
+                const tech = p.tech_stack ? '<div class="proj-meta"><span class="proj-label">🛠️ 技术栈</span><span>' + escapeHtml(p.tech_stack) + '</span></div>' : '';
+                const desc = p.description ? '<div class="proj-desc">' + escapeHtml(p.description) + '</div>' : '';
+                d.innerHTML = name + role + tech + desc;
+            } else {
+                d.innerHTML = '<div class="proj-name">📦 ' + escapeHtml(String(p)) + '</div>';
+            }
+            projEl.appendChild(d);
+        });
+        if (!projEl.children.length) projEl.innerHTML = '<div class="exp-item"><p>未识别到项目经历</p></div>';
+        $('res-summary-text').textContent = currentResult.profileSummary || '-';
+    }
+
+    // Tech tag editing
+    let editTechTags = [];
+    function renderTechEditTags() {
+        editTechTags = Array.from(currentResult.techStack || []);
+        const area = document.getElementById('tech-tag-input-area');
+        area.innerHTML = '';
+        editTechTags.forEach((t, i) => {
+            const tag = document.createElement('span');
+            tag.className = 'tag';
+            tag.innerHTML = escapeHtml(t) + '<button class="tag-remove" onclick="removeTechTag(' + i + ')">×</button>';
+            area.appendChild(tag);
+        });
+    }
+    function addTechTag() {
+        const input = document.getElementById('tech-input');
+        const val = input.value.trim();
+        if (val) { editTechTags.push(val); input.value = ''; renderTechEditTags(); }
+    }
+    function removeTechTag(idx) { editTechTags.splice(idx, 1); renderTechEditTags(); }
+    function getTechTags() { return editTechTags; }
+
+    // Project edit cards
+    let projEditCardCount = 0;
+    function renderProjEditCards() {
+        const container = document.getElementById('res-proj-edit');
+        container.innerHTML = '';
+        projEditCardCount = 0;
+        (currentResult.projectHistory || []).forEach(p => {
+            if (typeof p === 'object' && p !== null) {
+                addProjEditCard(p.project_name || '', p.role || '', p.tech_stack || '', p.description || '');
+            }
+        });
+    }
+    function addProjEditCard(name, role, tech, desc) {
+        const container = document.getElementById('res-proj-edit');
+        const idx = projEditCardCount++;
+        const card = document.createElement('div');
+        card.className = 'proj-card';
+        card.id = 'pedit-card-' + idx;
+        card.innerHTML = '<div class="proj-card-header"><span class="proj-card-title">📦 项目 ' + (container.children.length + 1) + '</span><button class="proj-card-remove" type="button" onclick="removeProjEditCard(' + idx + ')">✕ 删除</button></div>' +
+            '<div class="proj-card-row">' +
+            '  <div><label class="form-label">项目名称</label><input class="form-input" id="pedit-name-' + idx + '" value="' + escapeHtml(name) + '"></div>' +
+            '  <div><label class="form-label">角色</label><input class="form-input" id="pedit-role-' + idx + '" value="' + escapeHtml(role) + '"></div>' +
+            '</div>' +
+            '<div><label class="form-label">技术栈</label><input class="form-input" id="pedit-tech-' + idx + '" value="' + escapeHtml(tech) + '"></div>' +
+            '<div><label class="form-label">项目描述</label><textarea class="form-textarea" id="pedit-desc-' + idx + '">' + escapeHtml(desc) + '</textarea></div>';
+        container.appendChild(card);
+    }
+    function removeProjEditCard(idx) {
+        const card = document.getElementById('pedit-card-' + idx);
+        if (card) card.remove();
+    }
+    function getProjEditCards() {
+        const result = [];
+        for (const card of document.getElementById('res-proj-edit').children) {
+            const id = card.id.replace('pedit-card-', '');
+            const name = document.getElementById('pedit-name-' + id).value.trim();
+            const role = document.getElementById('pedit-role-' + id).value.trim();
+            const tech = document.getElementById('pedit-tech-' + id).value.trim();
+            const desc = document.getElementById('pedit-desc-' + id).value.trim();
+            if (name || role || tech || desc) {
+                result.push({ project_name: name, role, tech_stack: tech, description: desc });
+            }
+        }
+        return result;
+    }
+
+    // Save modal
+    function showSaveModal() {
+        if (!currentResult) return;
+        editingId = null;
+        document.getElementById('modal-title').textContent = '💾 保存简历';
+        document.getElementById('edit-name').value = currentResult.name || '';
+        document.getElementById('edit-email').value = currentResult.email || '';
+        document.getElementById('edit-phone').value = currentResult.phone || '';
+        document.getElementById('edit-edu').value = (currentResult.education || '') + (currentResult.workExperience ? ' / ' + currentResult.workExperience : '');
+        document.getElementById('edit-tech').value = (currentResult.techStack || []).join(', ');
+        document.getElementById('edit-work').value = (currentResult.workHistory || []).join('\n');
+        document.getElementById('edit-proj').value = (currentResult.projectHistory || []).map(p => {
+            if (typeof p === 'object' && p !== null) {
+                const parts = [];
+                if (p.project_name) parts.push('【' + p.project_name + '】');
+                if (p.role) parts.push('角色:' + p.role);
+                if (p.tech_stack) parts.push('技术:' + p.tech_stack);
+                if (p.description) parts.push(p.description);
+                return parts.join(' ');
+            }
+            return String(p);
+        }).join('\n');
+        document.getElementById('edit-summary').value = currentResult.profileSummary || '';
+        document.getElementById('edit-remark').value = '';
+        document.getElementById('edit-modal').classList.add('show');
+    }
+
+    function closeEditModal() {
+        document.getElementById('edit-modal').classList.remove('show');
+        editingId = null;
+    }
+
+    // Project cards
+    let projCardCount = 0;
+    function addProjCard(name, role, tech, desc) {
+        const container = document.getElementById('proj-cards-container');
+        const idx = projCardCount++;
+        const card = document.createElement('div');
+        card.className = 'proj-card';
+        card.id = 'proj-card-' + idx;
+        const num = container.children.length + 1;
+        card.innerHTML = '<div class="proj-card-header"><span class="proj-card-title">📦 项目 ' + num + '</span><button class="proj-card-remove" type="button" onclick="removeProjCard(' + idx + ')">✕ 删除</button></div>' +
+            '<div class="proj-card-row">' +
+            '  <div><label class="form-label">项目名称</label><input class="form-input" id="proj-name-' + idx + '" value="' + (name ? escapeHtml(name) : '') + '"></div>' +
+            '  <div><label class="form-label">角色</label><input class="form-input" id="proj-role-' + idx + '" value="' + (role ? escapeHtml(role) : '') + '"></div>' +
+            '</div>' +
+            '<div><label class="form-label">技术栈</label><input class="form-input" id="proj-tech-' + idx + '" value="' + (tech ? escapeHtml(tech) : '') + '"></div>' +
+            '<div><label class="form-label">项目描述</label><textarea class="form-textarea" id="proj-desc-' + idx + '">' + (desc ? escapeHtml(desc) : '') + '</textarea></div>';
+        container.appendChild(card);
+    }
+    function removeProjCard(idx) {
+        const card = document.getElementById('proj-card-' + idx);
+        if (card) card.remove();
+    }
+    function getProjCards() {
+        const cards = document.getElementById('proj-cards-container').children;
+        const result = [];
+        for (const card of cards) {
+            const id = card.id.replace('proj-card-', '');
+            const name = document.getElementById('proj-name-' + id).value.trim();
+            const role = document.getElementById('proj-role-' + id).value.trim();
+            const tech = document.getElementById('proj-tech-' + id).value.trim();
+            const desc = document.getElementById('proj-desc-' + id).value.trim();
+            if (name || role || tech || desc) {
+                result.push({ project_name: name, role, tech_stack: tech, description: desc });
+            }
+        }
+        return result;
+    }
+
+    function showSaveModal() {
+        if (!currentResult) return;
+        editingId = null;
+        document.getElementById('modal-title').textContent = '💾 保存简历';
+        document.getElementById('edit-name').value = currentResult.name || '';
+        document.getElementById('edit-email').value = currentResult.email || '';
+        document.getElementById('edit-phone').value = currentResult.phone || '';
+        document.getElementById('edit-edu').value = (currentResult.education || '') + (currentResult.workExperience ? ' / ' + currentResult.workExperience : '');
+        document.getElementById('edit-tech').value = (currentResult.techStack || []).join(', ');
+        document.getElementById('edit-work').value = (currentResult.workHistory || []).join('\n');
+        document.getElementById('proj-cards-container').innerHTML = '';
+        projCardCount = 0;
+        (currentResult.projectHistory || []).forEach(p => {
+            if (typeof p === 'object' && p !== null) {
+                addProjCard(p.project_name || '', p.role || '', p.tech_stack || '', p.description || '');
+            }
+        });
+        document.getElementById('edit-summary').value = currentResult.profileSummary || '';
+        document.getElementById('edit-remark').value = '';
+        document.getElementById('edit-modal').classList.add('show');
+    }
+
+    function closeEditModal() {
+        document.getElementById('edit-modal').classList.remove('show');
+        editingId = null;
+    }
+
+    async function confirmSave() {
+        const name = document.getElementById('edit-name').value.trim();
+        if (!name) { alert('姓名不能为空'); return; }
+        const techStr = document.getElementById('edit-tech').value.trim();
+        const workStr = document.getElementById('edit-work').value.trim();
+        const payload = {
+            name,
+            email: document.getElementById('edit-email').value.trim(),
+            phone: document.getElementById('edit-phone').value.trim(),
+            education: document.getElementById('edit-edu').value.trim(),
+            techStack: techStr ? techStr.split(',').map(s => s.trim()).filter(Boolean) : [],
+            workHistory: workStr ? workStr.split('\n').map(s => s.trim()).filter(Boolean) : [],
+            projectHistory: getProjCards(),
+            profileSummary: document.getElementById('edit-summary').value.trim(),
+            rawText: editingId ? undefined : (currentResult ? currentResult.rawText : undefined),
+            remark: document.getElementById('edit-remark').value.trim()
+        };
+        try {
+            const res = editingId
+                ? await fetch('/api/resume/saved/' + editingId, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({...payload, id: editingId}) })
+                : await fetch('/api/resume/saved', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+            if (!res.ok) {
+                let errDetail = 'HTTP ' + res.status;
+                try { const d = await res.json(); errDetail = d.error || d.message || JSON.stringify(d); } catch(e) {}
+                throw new Error('保存失败: ' + errDetail);
+            }
+            closeEditModal();
+            loadSavedList();
+        } catch (e) { alert(e.message); }
+    }
+
+    // Saved list
+    async function loadSavedList() {
+        try {
+            const res = await fetch('/api/resume/saved');
+            if (!res.ok) return;
+            savedList = await res.json();
+            renderSavedList();
+        } catch (e) { console.error(e); }
+    }
+
+    function renderSavedList() {
+        const count = savedList.length;
+        document.getElementById('saved-count-badge').textContent = count;
+        document.getElementById('saved-total-count').textContent = count;
+
+        const mini = document.getElementById('mini-saved-list');
+        const full = document.getElementById('full-saved-list');
+
+        if (count === 0) {
+            mini.innerHTML = '<div class="saved-empty">暂无已保存简历</div>';
+            full.innerHTML = '<div class="saved-empty">暂无已保存简历</div>';
+            return;
+        }
+
+        const makeItem = (r, actions) => `
+            <div class="saved-item" onclick="viewSaved('${r.id}')">
+                <div class="saved-item-header">
+                    <span class="saved-item-name">${escapeHtml(r.name)}</span>
+                    <span class="saved-item-date">${formatDate(r.savedAt)}</span>
+                </div>
+                <div class="saved-item-tags">${(r.techStack || []).slice(0,4).map(t => `<span class="saved-item-tag">${escapeHtml(t)}</span>`).join('')}</div>
+                ${actions ? `<div class="saved-item-actions">
+                    <button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();editSaved('${r.id}')">✏️ 编辑</button>
+                    <button class="btn btn-danger btn-sm" onclick="event.stopPropagation();deleteSaved('${r.id}')">🗑️ 删除</button>
+                </div>` : ''}
+            </div>`;
+
+        mini.innerHTML = savedList.slice(0, 8).map(r => makeItem(r, false)).join('');
+        full.innerHTML = savedList.map(r => makeItem(r, true)).join('');
+    }
+
+    function viewSaved(id) {
+        const r = savedList.find(x => x.id === id);
+        if (!r) return;
+        currentResult = { name: r.name, email: r.email, phone: r.phone, education: r.education, workExperience: '',
+            techStack: r.techStack || [], workHistory: r.workHistory || [], projectHistory: r.projectHistory || [],
+            profileSummary: r.profileSummary || '', rawText: r.rawText || '' };
+        $('placeholder').style.display = 'none';
+        $('parse-progress').classList.remove('show');
+        renderResult(currentResult);
+        switchTab('parse');
+    }
+
+    function editSaved(id) {
+        const r = savedList.find(x => x.id === id);
+        if (!r) return;
+        editingId = id;
+        document.getElementById('modal-title').textContent = '✏️ 编辑简历';
+        document.getElementById('edit-name').value = r.name || '';
+        document.getElementById('edit-email').value = r.email || '';
+        document.getElementById('edit-phone').value = r.phone || '';
+        document.getElementById('edit-edu').value = r.education || '';
+        document.getElementById('edit-tech').value = (r.techStack || []).join(', ');
+        document.getElementById('edit-work').value = (r.workHistory || []).join('\n');
+        document.getElementById('proj-cards-container').innerHTML = '';
+        projCardCount = 0;
+        (r.projectHistory || []).forEach(p => {
+            if (typeof p === 'object' && p !== null) {
+                addProjCard(p.project_name || '', p.role || '', p.tech_stack || '', p.description || '');
+            }
+        });
+        document.getElementById('edit-summary').value = r.profileSummary || '';
+        document.getElementById('edit-remark').value = r.remark || '';
+        document.getElementById('edit-modal').classList.add('show');
+    }
+
+    async function deleteSaved(id) {
+        if (!confirm('确定要删除这条简历吗？')) return;
+        await fetch('/api/resume/saved/' + id, { method: 'DELETE' });
+        loadSavedList();
+    }
+
+    // Debug
+    function toggleJson() {
+        const box = document.getElementById('json-box');
+        const btn = document.getElementById('toggle-json-btn');
+        box.classList.toggle('show');
+        btn.textContent = box.classList.contains('show') ? '收起 JSON' : '查看 JSON';
+    }
+    function toggleDebug() {
+        const p = document.getElementById('debug-panel');
+        const btn = document.getElementById('toggle-debug-btn');
+        const isHidden = p.style.display === 'none';
+        p.style.display = isHidden ? 'block' : 'none';
+        btn.textContent = isHidden ? '收起调试' : '调试信息';
+    }
+    function switchDebugTab(tab) {
+        document.querySelectorAll('.debug-tab').forEach(t => t.classList.remove('active'));
+        document.querySelectorAll('.debug-tab-content').forEach(c => c.classList.remove('active'));
+        document.querySelector('.debug-tab[onclick="switchDebugTab(\'' + tab + '\')"]').classList.add('active');
+        document.getElementById('debug-' + tab).classList.add('active');
+    }
+
+    function escapeHtml(text) {
+        if (!text) return '';
+        const d = document.createElement('div');
+        d.textContent = text;
+        return d.innerHTML;
+    }
+
+    function formatDate(ts) {
+        if (!ts) return '-';
+        const d = new Date(ts);
+        return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+    }
+
+    // Init
+    loadSavedList();
+</script>
+
+</body>
+</html>

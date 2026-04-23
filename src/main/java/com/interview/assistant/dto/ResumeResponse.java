@@ -38,8 +38,8 @@ public class ResumeResponse {
     /** 工作经历摘要 */
     private java.util.List<String> workHistory;
 
-    /** 项目经历摘要 */
-    private java.util.List<String> projectHistory;
+    /** 项目经历（每个元素为 Map：project_name, role, tech_stack, description） */
+    private java.util.List<java.util.Map<String, String>> projectHistory;
 
     /** 候选人整体画像描述（供面试官使用） */
     private String profileSummary;
@@ -49,4 +49,7 @@ public class ResumeResponse {
 
     /** 错误信息（解析失败时填充） */
     private String errorMessage;
+
+    /** LLM 原始返回（用于 Debug） */
+    private String llmRawResponse;
 }

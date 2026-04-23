@@ -3,6 +3,8 @@ package com.interview.assistant.controller;
 import com.interview.assistant.agent.ResumeAgent;
 import com.interview.assistant.dto.ResumeResponse;
 import com.interview.assistant.model.AppSettings;
+import com.interview.assistant.model.SavedResume;
+import com.interview.assistant.service.ResumeService;
 import com.interview.assistant.service.SettingsService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -10,6 +12,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
@@ -34,6 +37,7 @@ public class ResumeController {
 
     private final ResumeAgent resumeAgent;
     private final SettingsService settingsService;
+    private final ResumeService resumeService;
 
     /**
      * 上传简历并解析
@@ -94,6 +98,8 @@ public class ResumeController {
 
             java.util.Map<String, Object> response = new java.util.HashMap<>();
             response.put("candidateId", candidateId);
+            response.put("rawText", result.getRawText()); // 原始简历全文
+            response.put("llmRawResponse", result.getLlmRawResponse()); // LLM 原始返回（debug）
             response.put("name", result.getName());
             response.put("email", result.getEmail());
             response.put("phone", result.getPhone());
@@ -152,5 +158,69 @@ public class ResumeController {
                     "error", "解析失败: " + e.getMessage()
             ));
         }
+    }
+
+    // ========== 已保存简历 CRUD ==========
+
+    /** 列表 */
+    @GetMapping("/saved")
+    public ResponseEntity<List<SavedResume>> listSaved() {
+        return ResponseEntity.ok(resumeService.list());
+    }
+
+    /** 详情 */
+    @GetMapping("/saved/{id}")
+    public ResponseEntity<?> getSaved(@PathVariable String id) {
+        return resumeService.get(id)
+                .map(ResponseEntity::ok)
+                .orElse(ResponseEntity.notFound().build());
+    }
+
+    /** 保存（从解析结果） */
+    @PostMapping("/saved")
+    public ResponseEntity<SavedResume> saveResume(@RequestBody Map<String, Object> body) {
+        // projectHistory 是 List<Map<String, String>>
+        List<Map<String, String>> projectHistory = new java.util.ArrayList<>();
+        Object phObj = body.get("projectHistory");
+        if (phObj instanceof List) {
+            for (Object item : (List<?>) phObj) {
+                if (item instanceof Map) {
+                    @SuppressWarnings("unchecked")
+                    Map<String, Object> m = (Map<String, Object>) item;
+                    Map<String, String> proj = new java.util.LinkedHashMap<>();
+                    m.forEach((k, v) -> proj.put(k, v != null ? String.valueOf(v) : ""));
+                    projectHistory.add(proj);
+                }
+            }
+        }
+
+        SavedResume saved = resumeService.saveFromParse(
+                (String) body.get("name"),
+                (String) body.get("email"),
+                (String) body.get("phone"),
+                (String) body.get("education"),
+                (List<String>) body.get("techStack"),
+                (List<String>) body.get("workHistory"),
+                projectHistory,
+                (String) body.get("profileSummary"),
+                (String) body.get("rawText"),
+                (String) body.getOrDefault("remark", "")
+        );
+        return ResponseEntity.ok(saved);
+    }
+
+    /** 更新 */
+    @PutMapping("/saved/{id}")
+    public ResponseEntity<?> updateSaved(@PathVariable String id, @RequestBody SavedResume updated) {
+        return resumeService.update(id, updated)
+                .map(ResponseEntity::ok)
+                .orElse(ResponseEntity.notFound().build());
+    }
+
+    /** 删除 */
+    @DeleteMapping("/saved/{id}")
+    public ResponseEntity<Void> deleteSaved(@PathVariable String id) {
+        resumeService.delete(id);
+        return ResponseEntity.noContent().build();
     }
 }

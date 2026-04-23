@@ -103,6 +103,8 @@ body {
     align-items: center;
     justify-content: center;
     padding: 40px;
+    position: relative;
+    z-index: 1;
 }
 
 .hero {
@@ -215,6 +217,8 @@ body {
     display: flex;
     flex-direction: column;
     overflow: hidden;
+    position: relative;
+    z-index: 1;
 }
 
 .chat-header {

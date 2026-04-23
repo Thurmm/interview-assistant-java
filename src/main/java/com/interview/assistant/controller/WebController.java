@@ -20,4 +20,14 @@ public class WebController {
     public String settings() {
         return "settings";
     }
+
+    @GetMapping("/resume")
+    public String resume() {
+        return "resume";
+    }
+
+    @GetMapping("/knowledge")
+    public String knowledge() {
+        return "knowledge";
+    }
 }

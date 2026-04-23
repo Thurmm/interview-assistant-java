@@ -31,9 +31,10 @@ public class InterviewerAgent {
             InterviewPhase currentPhase,
             int questionIndex,
             List<Message> conversationHistory,
-            ModelConfig modelConfig
+            ModelConfig modelConfig,
+            String skillQuestionsContext
     ) {
-        String systemPrompt = buildSystemPrompt(position, experience, candidateProfile, currentPhase);
+        String systemPrompt = buildSystemPrompt(position, experience, candidateProfile, currentPhase, skillQuestionsContext != null ? skillQuestionsContext : null);
         String userPrompt = buildQuestionPrompt(questionIndex, conversationHistory, currentPhase);
 
         String result = qdrantConfig.callLlm(
@@ -116,7 +117,7 @@ public class InterviewerAgent {
         return InterviewPhase.WRAP_UP;
     }
 
-    private String buildSystemPrompt(String position, String experience, String candidateProfile, InterviewPhase phase) {
+    private String buildSystemPrompt(String position, String experience, String candidateProfile, InterviewPhase phase, String skillQuestionsContext) {
         String phaseDesc = switch (phase) {
             case OPENING -> "开场阶段，问一些建立 rapport 的问题，如自我介绍、项目经历概述";
             case TECHNICAL -> "技术深入阶段，结合简历问具体的技术问题，考察真实能力";
@@ -124,6 +125,11 @@ public class InterviewerAgent {
             case DEEP_DIVE -> "深挖阶段，针对简历中的亮点项目或存疑点深入追问";
             case WRAP_UP -> "收尾阶段，可以问一些开放性问题";
         };
+
+        String skillContextSection = "";
+        if (skillQuestionsContext != null && !skillQuestionsContext.isBlank()) {
+            skillContextSection = "\n\n【技术面出题参考（从知识库检索）】\n" + skillQuestionsContext;
+        }
 
         return """
                 你是一位专业、严谨且友善的面试官，正在面试一位应聘 %s 岗位（要求 %s 经验）的候选人。
@@ -137,7 +143,8 @@ public class InterviewerAgent {
                 - 问题必须基于候选人的实际简历经历，不能问泛泛的八股文
                 - 技术问题要问到具体的实现细节、原理、踩坑经验
                 - 保持友好专业的面试氛围
-                """.formatted(position, experience, phaseDesc, candidateProfile);
+                %s
+                """.formatted(position, experience, phaseDesc, candidateProfile, skillContextSection);
     }
 
     private String buildQuestionPrompt(int questionIndex, List<Message> history, InterviewPhase phase) {
