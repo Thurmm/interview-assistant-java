@@ -1,5 +1,7 @@
 package com.interview.assistant.service;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
@@ -8,23 +10,23 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 
 /**
- * 内存向量存储服务（开发阶段使用）
+ * 内存向量存储服务（生产可用版本）
  *
- * 功能：
- * 1. 简历文档的向量化存储（内存 HashMap）
- * 2. RAG 检索：TF-IDF 文本相似度匹配
- * 3. 参考答案的存储与检索
+ * 使用真实 embedding 向量（OpenAI/MiniMax）替代 TF-IDF，
+ * 支持语义相似度检索，而非关键词匹配。
  *
- * 生产环境（需要替换为 Qdrant / PGVector）：
- * - 部署 Qdrant：docker run -d --name qdrant -p 6333:6333 -p 6334:6334 qdrant/qdrant
- * - 替换本服务实现类为 QdrantVectorStoreService 即可，业务接口不变
+ * - 存储：文本 + 向量 + 元数据
+ * - 检索：余弦相似度 top-K
+ * - 持久化：JSON 文件（含向量数据）
+ *
+ * 生产环境可替换为 Qdrant/PGVector，只需修改存储层。
  */
 @Slf4j
 @Service
 public class VectorStoreService {
 
     /**
-     * 内存向量存储的文档对象
+     * 内存向量存储的文档对象（含 embedding 向量）
      */
     @lombok.Data
     @lombok.AllArgsConstructor
@@ -33,25 +35,79 @@ public class VectorStoreService {
         private String id;
         private String content;
         private Map<String, Object> metadata;
+        /** 预计算的文本向量（1536 维 / MiniMax embedding-2） */
+        private float[] embedding;
     }
 
     // ============ 内存存储 ============
-    private final Map<String, StoredDoc> docStore = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, StoredDoc> docStore = new ConcurrentHashMap<>();
+    private final ObjectMapper objectMapper = new ObjectMapper();
+    private final BgeEmbeddingService embeddingService;
     private static final String PERSIST_FILE = "data/vector_refs.json";
 
-    public VectorStoreService() {
-        log.info("VectorStoreService 初始化（内存模式，仅支持纯文本检索）");
+    public VectorStoreService(BgeEmbeddingService embeddingService) {
+        this.embeddingService = embeddingService;
+        log.info("VectorStoreService 初始化（语义向量模式）");
         loadFromDisk();
     }
+
+    // ============ 持久化（JSON，含向量数据）============
 
     private synchronized void loadFromDisk() {
         try {
             java.io.File f = new java.io.File(PERSIST_FILE);
             if (f.exists()) {
-                com.fasterxml.jackson.databind.ObjectMapper mapper = new com.fasterxml.jackson.databind.ObjectMapper();
-                List<StoredDoc> list = mapper.readValue(f, mapper.getTypeFactory().constructCollectionType(List.class, StoredDoc.class));
-                list.forEach(doc -> docStore.put(doc.getId(), doc));
-                log.info("从磁盘恢复 {} 条参考问答", list.size());
+                List<StoredDoc> list = objectMapper.readValue(f,
+                        objectMapper.getTypeFactory().constructCollectionType(List.class, StoredDoc.class));
+
+                // 检测真实 embedding 维度（可能因欠费失败）
+                int expectedDim;
+                try {
+                    expectedDim = embeddingService.getDimension();
+                } catch (Exception e) {
+                    String em = e.getMessage() != null ? e.getMessage().toLowerCase() : "";
+                    if (em.contains("connection") || em.contains("refused") || em.contains("unable to connect") || em.contains("connect")) {
+                        log.warn("[VectorStore] 无法连接 BGE Embedding 服务（localhost:8001），跳过向量重新生成: {}", e.getMessage());
+                    } else {
+                        log.warn("[VectorStore] 无法获取 embedding 维度，跳过向量重新生成: {}", e.getMessage());
+                    }
+                    list.forEach(doc -> docStore.put(doc.getId(), doc));
+                    log.info("从磁盘恢复 {} 条参考问答（原有向量）", list.size());
+                    return;
+                }
+
+                if (expectedDim == 0) {
+                    log.warn("[VectorStore] 无法获取 embedding 维度，保留原有向量");
+                    expectedDim = -1;
+                }
+
+                int reEmbedCount = 0;
+                for (StoredDoc doc : list) {
+                    // 旧 TF-IDF 数据维度为 0 或不匹配（真实 embedding 应为 1536），需重新生成
+                    boolean needsReEmbed = expectedDim > 0
+                            && (doc.getEmbedding() == null
+                                || doc.getEmbedding().length == 0
+                                || doc.getEmbedding().length != expectedDim);
+
+                    if (needsReEmbed) {
+                        float[] newEmb = embeddingService.embed(doc.getContent());
+                        if (newEmb != null && newEmb.length > 0) {
+                            doc.setEmbedding(newEmb);
+                            reEmbedCount++;
+                            log.info("[VectorStore] 重新向量化: {} → dim={}",
+                                    doc.getContent().substring(0, Math.min(30, doc.getContent().length())),
+                                    newEmb.length);
+                        }
+                    }
+                    docStore.put(doc.getId(), doc);
+                }
+
+                if (reEmbedCount > 0) {
+                    log.warn("[VectorStore] 检测到 {} 条旧数据维度不匹配，已重新生成向量", reEmbedCount);
+                    saveToDisk(); // 持久化新向量
+                }
+
+                log.info("从磁盘恢复 {} 条参考问答（含向量）", list.size());
             }
         } catch (Exception e) {
             log.warn("从磁盘恢复参考问答失败: {}", e.getMessage());
@@ -63,8 +119,8 @@ public class VectorStoreService {
             List<StoredDoc> refs = docStore.values().stream()
                     .filter(d -> "reference_answer".equals(d.getMetadata().get("type")))
                     .collect(Collectors.toList());
-            com.fasterxml.jackson.databind.ObjectMapper mapper = new com.fasterxml.jackson.databind.ObjectMapper();
-            mapper.writerWithDefaultPrettyPrinter().writeValue(new java.io.File(PERSIST_FILE), refs);
+            objectMapper.writerWithDefaultPrettyPrinter().writeValue(
+                    new java.io.File(PERSIST_FILE), refs);
         } catch (Exception e) {
             log.warn("保存参考问答到磁盘失败: {}", e.getMessage());
         }
@@ -73,23 +129,25 @@ public class VectorStoreService {
     // ============ 简历文档存储 ============
 
     /**
-     * 存储简历文档
+     * 存储简历文档（含向量化）
      */
     public void storeResume(String candidateId, String resumeText, Map<String, Object> metadata) {
         try {
             if (metadata == null) metadata = new HashMap<>();
             metadata.put("type", "resume");
-            StoredDoc doc = new StoredDoc(candidateId, resumeText, metadata);
+            float[] embedding = embeddingService.embed(resumeText);
+
+            StoredDoc doc = new StoredDoc(candidateId, resumeText, metadata, embedding);
             docStore.put(candidateId, doc);
-            log.info("简历已存入内存向量库: id={}, 文本长度={}", candidateId, resumeText.length());
+            log.info("简历已存入向量库: id={}, 文本长度={}, 向量维度={}",
+                    candidateId, resumeText.length(), embedding != null ? embedding.length : 0);
         } catch (Exception e) {
             log.error("简历存储失败: {}", candidateId, e);
         }
     }
 
     /**
-     * RAG 检索：根据查询文本找最相似的简历内容
-     * 使用余弦相似度计算
+     * RAG 检索：根据查询文本找最相似的简历内容（向量语义检索）
      */
     public String retrieveContext(String candidateId, String query, int topK) {
         List<StoredDoc> docs = docStore.values().stream()
@@ -100,22 +158,15 @@ public class VectorStoreService {
             return "";
         }
 
-        // 使用余弦相似度计算
-        return docs.stream()
-                .map(doc -> new AbstractMap.SimpleEntry<>(
-                        doc,
-                        calcCosineSimilarity(query, doc.getContent())
-                ))
-                .sorted((a, b) -> Float.compare(b.getValue(), a.getValue()))
-                .limit(topK)
-                .map(e -> e.getKey().getContent())
+        return retrieveTopDocs(query, docs, topK).stream()
+                .map(StoredDoc::getContent)
                 .collect(Collectors.joining("\n\n"));
     }
 
     // ============ 参考答案存储 ============
 
     /**
-     * 存储参考答案
+     * 存储参考答案（含向量化）
      */
     public void storeReferenceAnswer(String question, String answer, List<String> tags) {
         try {
@@ -124,8 +175,14 @@ public class VectorStoreService {
             Map<String, Object> meta = new HashMap<>();
             meta.put("type", "reference_answer");
             meta.put("tags", String.join(",", tags != null ? tags : List.of()));
-            docStore.put(docId, new StoredDoc(docId, combined, meta));
-            log.info("参考答案已存入: {}", question.substring(0, Math.min(30, question.length())));
+            meta.put("question", question); // 用于精准匹配
+
+            float[] embedding = embeddingService.embed(combined);
+            StoredDoc doc = new StoredDoc(docId, combined, meta, embedding);
+            docStore.put(docId, doc);
+            log.info("参考答案已存入向量库: {}, 向量维度={}",
+                    question.substring(0, Math.min(30, question.length())),
+                    embedding != null ? embedding.length : 0);
             saveToDisk();
         } catch (Exception e) {
             log.error("参考答案存储失败: {}", e.getMessage());
@@ -133,7 +190,7 @@ public class VectorStoreService {
     }
 
     /**
-     * 检索参考答案
+     * 检索参考答案（向量语义检索）
      */
     public String retrieveReferenceAnswer(String question, int topK) {
         if (docStore.isEmpty()) {
@@ -148,23 +205,16 @@ public class VectorStoreService {
             return "";
         }
 
-        // 使用余弦相似度计算
-        return refDocs.stream()
-                .map(doc -> new AbstractMap.SimpleEntry<>(
-                        doc,
-                        calcCosineSimilarity(question, doc.getContent())
-                ))
-                .sorted((a, b) -> Float.compare(b.getValue(), a.getValue()))
-                .limit(topK)
-                .map(e -> e.getKey().getContent())
+        return retrieveTopDocs(question, refDocs, topK).stream()
+                .map(StoredDoc::getContent)
                 .collect(Collectors.joining("\n---\n"));
     }
 
     /**
-     * 检索与技能相关的面试题目（用于技术面出题指导）
-     * @param skills 技术栈列表，如 ["Java", "Spring", "MySQL"]
-     * @param topK 返回数量
-     * @return 格式化的题目列表，每条包含问题和参考答案
+     * 检索与技能相关的面试题目（技术面出题指导）
+     *
+     * @param skills 技术栈列表
+     * @param topK   返回数量
      */
     public String retrieveSkillQuestions(List<String> skills, int topK) {
         if (docStore.isEmpty() || skills == null || skills.isEmpty()) {
@@ -179,29 +229,87 @@ public class VectorStoreService {
             return "";
         }
 
-        // 构建技能查询词
         String skillQuery = String.join(" ", skills);
 
-        // 使用余弦相似度计算，但按技能关键词加权
-        Map<StoredDoc, Float> scored = new HashMap<>();
-        for (StoredDoc doc : refDocs) {
-            float baseScore = calcCosineSimilarity(skillQuery, doc.getContent());
-            // 检查技能关键词在文档中出现的次数（额外加权）
-            int skillMatchCount = 0;
+        // 向量语义检索
+        List<StoredDoc> topDocs = retrieveTopDocs(skillQuery, refDocs, topK * 2);
+
+        // 对技能关键词做二次加权排序
+        List<Map.Entry<StoredDoc, Float>> scored = new ArrayList<>();
+        for (StoredDoc doc : topDocs) {
+            float baseScore = cosineSim(
+                    embeddingService.embed(skillQuery),
+                    doc.getEmbedding()
+            );
+
+            // 技能匹配加分
+            int matchCount = 0;
+            String contentLower = doc.getContent().toLowerCase();
             for (String skill : skills) {
-                if (skill.length() > 2 && doc.getContent().toLowerCase().contains(skill.toLowerCase())) {
-                    skillMatchCount++;
+                if (skill.length() > 2 && contentLower.contains(skill.toLowerCase())) {
+                    matchCount++;
                 }
             }
-            float bonus = (float) skillMatchCount / skills.size() * 0.3f; // 最多30%加分
-            scored.put(doc, Math.min(1.0f, baseScore + bonus));
+            float bonus = (float) matchCount / skills.size() * 0.3f;
+            scored.add(new AbstractMap.SimpleEntry<>(doc, Math.min(1.0f, baseScore + bonus)));
         }
 
-        return scored.entrySet().stream()
+        return scored.stream()
                 .sorted((a, b) -> Float.compare(b.getValue(), a.getValue()))
                 .limit(topK)
                 .map(e -> e.getKey().getContent())
                 .collect(Collectors.joining("\n---\n"));
+    }
+
+    // ============ 向量检索核心 ============
+
+    /**
+     * 根据 query 文本检索 top-K 最相似的文档
+     */
+    private List<StoredDoc> retrieveTopDocs(String query, List<StoredDoc> docs, int topK)
+            throws VectorStoreException {
+        float[] queryEmbedding;
+        try {
+            queryEmbedding = embeddingService.embed(query);
+        } catch (Exception e) {
+            String em = e.getMessage() != null ? e.getMessage().toLowerCase() : "";
+            String errorCode;
+            String userMsg;
+            if (em.contains("connection") || em.contains("refused") || em.contains("unable to connect") || em.contains("connect")) {
+                errorCode = "BGE_SERVICE_UNAVAILABLE";
+                userMsg = "BGE Embedding 服务未启动，请先运行 embedding_service/start.bat（Linux: bash start.sh）";
+            } else if (em.contains("socket") || em.contains("timeout") || em.contains("read")) {
+                errorCode = "BGE_NETWORK_ERROR";
+                userMsg = "BGE Embedding 服务连接超时，请检查网络后重试。";
+            } else {
+                errorCode = "BGE_ERROR";
+                userMsg = "Embedding 服务暂时不可用（" + (e.getMessage() != null ? e.getMessage() : "未知错误") + "），请稍后重试。";
+            }
+            throw new VectorStoreException(errorCode, userMsg);
+        }
+
+        if (queryEmbedding == null || queryEmbedding.length == 0) {
+            throw new VectorStoreException("EMBEDDING_FAILED",
+                    "Embedding 服务返回空结果，请检查 API 配置。");
+        }
+
+        return docs.stream()
+                .filter(doc -> doc.getEmbedding() != null && doc.getEmbedding().length > 0)
+                .map(doc -> new AbstractMap.SimpleEntry<>(
+                        doc,
+                        cosineSim(queryEmbedding, doc.getEmbedding())
+                ))
+                .sorted((a, b) -> Float.compare(b.getValue(), a.getValue()))
+                .limit(topK)
+                .map(AbstractMap.SimpleEntry::getKey)
+                .collect(Collectors.toList());
+    }
+
+    /**
+     * 计算两个向量的余弦相似度
+     */
+    private static float cosineSim(float[] a, float[] b) {
+        return EmbeddingService.cosineSimilarity(a, b);
     }
 
     // ============ 删除操作 ============
@@ -211,14 +319,12 @@ public class VectorStoreService {
         log.info("简历已从向量库删除: {}", candidateId);
     }
 
-    /**
-     * 根据问题删除参考答案
-     */
     public boolean deleteReferenceAnswer(String question) {
         String prefix = "【问题】\n" + question + "\n\n【参考答案】";
         String docIdToDelete = null;
-        for (var entry : docStore.entrySet()) {
-            if (prefix.equals(entry.getValue().getContent().substring(0, Math.min(prefix.length(), entry.getValue().getContent().length())))) {
+        for (Map.Entry<String, StoredDoc> entry : docStore.entrySet()) {
+            StoredDoc doc = entry.getValue();
+            if (doc.getContent().startsWith(prefix)) {
                 docIdToDelete = entry.getKey();
                 break;
             }
@@ -232,9 +338,6 @@ public class VectorStoreService {
         return false;
     }
 
-    /**
-     * 更新参考答案
-     */
     public boolean updateReferenceAnswer(String oldQuestion, String newQuestion, String newAnswer, List<String> newTags) {
         deleteReferenceAnswer(oldQuestion);
         storeReferenceAnswer(newQuestion, newAnswer, newTags);
@@ -250,14 +353,12 @@ public class VectorStoreService {
                 .filter(d -> "reference_answer".equals(d.getMetadata().get("type")))
                 .map(doc -> {
                     String content = doc.getContent();
-                    // 格式：【问题】xxx\n\n【参考答案】yyy
                     String question = "";
                     String answer = "";
                     if (content.startsWith("【问题】")) {
                         int idx = content.indexOf("\n\n【参考答案】");
                         if (idx > 0) {
                             question = content.substring(4, idx).trim();
-                            // Find the 】 after 【参考答案】 to extract answer from the right position
                             int ansIdx = content.indexOf("】", idx + 6);
                             if (ansIdx >= 0) {
                                 answer = content.substring(ansIdx + 1).replace("\r", "").trim();
@@ -272,84 +373,28 @@ public class VectorStoreService {
                             "tags", tags.isEmpty() ? List.of() : List.of(tags.split(","))
                     );
                 })
-                .collect(java.util.stream.Collectors.toList());
+                .collect(Collectors.toList());
     }
 
     /**
-     * 始终返回 true（内存模式始终可用）
+     * 判断向量服务是否可用
+     */
+    /**
+     * 判断 embedding 服务是否可用
      */
     public boolean isAvailable() {
-        return true;
-    }
-
-    // ============ 关键词重叠评分（简化版 TF-IDF）============
-
-    /**
-     * 计算查询词在文档中的重叠得分（0.0 ~ 1.0）
-     */
-    private float calcKeywordScore(String[] queryWords, String docText) {
-        if (queryWords == null || queryWords.length == 0) return 0f;
-        int matchCount = 0;
-        for (String word : queryWords) {
-            if (word.length() > 1 && docText.contains(word)) {
-                matchCount++;
-            }
-        }
-        return (float) matchCount / queryWords.length;
+        return embeddingService != null && embeddingService.isAvailable();
     }
 
     /**
-     * 计算余弦相似度（基于词频）
+     * 判断 embedding 服务是否可用（不含日志输出）
      */
-    private float calcCosineSimilarity(String query, String docText) {
-        Map<String, Integer> queryFreq = calculateTermFrequency(query);
-        Map<String, Integer> docFreq = calculateTermFrequency(docText);
-        
-        // 计算向量点积
-        double dotProduct = 0;
-        for (String term : queryFreq.keySet()) {
-            if (docFreq.containsKey(term)) {
-                dotProduct += queryFreq.get(term) * docFreq.get(term);
-            }
+    public boolean isEmbeddingAvailable() {
+        try {
+            return embeddingService != null && embeddingService.isAvailable();
+        } catch (Exception e) {
+            return false;
         }
-        
-        // 计算向量长度
-        double queryNorm = calculateNorm(queryFreq);
-        double docNorm = calculateNorm(docFreq);
-        
-        if (queryNorm == 0 || docNorm == 0) {
-            return 0f;
-        }
-        
-        return (float) (dotProduct / (queryNorm * docNorm));
-    }
-
-    /**
-     * 计算词频
-     */
-    private Map<String, Integer> calculateTermFrequency(String text) {
-        Map<String, Integer> freqMap = new HashMap<>();
-        String[] words = text.toLowerCase().split("\\s+");
-        
-        for (String word : words) {
-            word = word.replaceAll("[^a-zA-Z0-9\\u4e00-\\u9fa5]", "");
-            if (word.length() > 1) {
-                freqMap.put(word, freqMap.getOrDefault(word, 0) + 1);
-            }
-        }
-        
-        return freqMap;
-    }
-
-    /**
-     * 计算向量长度
-     */
-    private double calculateNorm(Map<String, Integer> freqMap) {
-        double sum = 0;
-        for (int freq : freqMap.values()) {
-            sum += freq * freq;
-        }
-        return Math.sqrt(sum);
     }
 
     // ============ 统计方法 ============

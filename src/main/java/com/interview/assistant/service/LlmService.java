@@ -3,28 +3,38 @@ package com.interview.assistant.service;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.interview.assistant.model.AppSettings;
-import lombok.RequiredArgsConstructor;
+import io.github.resilience4j.retry.Retry;
+import io.github.resilience4j.retry.RetryConfig;
+import io.github.resilience4j.retry.RetryRegistry;
 import lombok.extern.slf4j.Slf4j;
 import okhttp3.*;
 import org.springframework.stereotype.Service;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Supplier;
 
+/**
+ * LLM 调用服务
+ *
+ * 使用 Resilience4j RetryRegistry 编程式 API 实现指数退避重试（2s → 4s → 6s），
+ * 替代原来的手动 Thread.sleep 重试逻辑。
+ */
 @Slf4j
 @Service
-@RequiredArgsConstructor
 public class LlmService {
 
     private final ObjectMapper objectMapper;
+    private final Retry retry;
 
     private static final MediaType JSON = MediaType.parse("application/json; charset=utf-8");
     private static final OkHttpClient HTTP_CLIENT = new OkHttpClient.Builder()
-            .connectTimeout(60, TimeUnit.SECONDS)
-            .readTimeout(120, TimeUnit.SECONDS)
-            .writeTimeout(60, TimeUnit.SECONDS)
+            .connectTimeout(30, TimeUnit.SECONDS)
+            .readTimeout(60, TimeUnit.SECONDS)
+            .writeTimeout(30, TimeUnit.SECONDS)
             .build();
 
     /**
@@ -39,7 +49,54 @@ public class LlmService {
     }
 
     /**
+     * 可重试 API 异常（5xx / 529 / 网络错误）
+     */
+    public static class RetryableApiException extends RuntimeException {
+        public RetryableApiException(String message) {
+            super(message);
+        }
+    }
+
+    /**
+     * HTTP 响应信息封装
+     */
+    public record ResponseInfo(String body, int statusCode, boolean isSuccess) {}
+
+    public LlmService(ObjectMapper objectMapper, RetryRegistry retryRegistry) {
+        this.objectMapper = objectMapper;
+        // 配置指数退避重试：2s → 4s → 6s
+        RetryConfig retryConfig = RetryConfig.custom()
+                .maxAttempts(3)
+                .waitDuration(Duration.ofSeconds(2))
+                .retryExceptions(
+                        java.io.IOException.class,
+                        java.net.SocketTimeoutException.class,
+                        java.net.ConnectException.class,
+                        RetryableApiException.class)
+                .ignoreExceptions(
+                        IllegalStateException.class,
+                        IllegalArgumentException.class)
+                .build();
+        this.retry = retryRegistry.retry("defaultRetry", retryConfig);
+
+        // 事件监听
+        retry.getEventPublisher()
+                .onRetry(event -> log.warn("[Retry] attempt={}/{}, error={}",
+                        event.getNumberOfRetryAttempts() + 1,
+                        retry.getRetryConfig().getMaxAttempts(),
+                        event.getLastThrowable().getMessage()))
+                .onError(event -> log.error("[Retry] 最终失败 after {} attempts",
+                        event.getNumberOfRetryAttempts() + 1))
+                .onSuccess(event -> {
+                    /* 成功时不打印，保持安静 */ });
+    }
+
+    /**
      * 调用 LLM 并同时返回原始返回和清洗后内容
+     *
+     * 使用 Resilience4j Retry 执行指数退避重试：
+     * - 5xx / 529 / 网络超时时自动重试
+     * - 退避序列：2s → 4s → 6s
      */
     public LlmResult callLlmWithRaw(
             List<Map<String, String>> messages,
@@ -53,72 +110,84 @@ public class LlmService {
             throw new IllegalStateException("API Key 未配置");
         }
 
-        String url = baseUrl.endsWith("/") ? baseUrl + "chat/completions" : baseUrl + "/chat/completions";
+        String url = baseUrl.endsWith("/") ? baseUrl + "/chat/completions" : baseUrl + "/chat/completions";
         String requestBody = buildRequestBody(model, messages);
 
-        int maxRetries = 3;
-        Exception lastException = null;
+        log.info("[LlmService] URL={}, model={}", url, model);
 
-        for (int attempt = 1; attempt <= maxRetries; attempt++) {
-            try {
-                log.info("[LlmService] URL={}, model={}, attempt={}/{}", url, model, attempt, maxRetries);
+        Supplier<ResponseInfo> decoratedCall = Retry.decorateSupplier(retry,
+                () -> executeOnce(url, apiKey, requestBody));
 
-                Request request = new Request.Builder()
-                        .url(url)
-                        .addHeader("Authorization", "Bearer " + apiKey)
-                        .addHeader("Content-Type", "application/json")
-                        .post(RequestBody.create(requestBody, JSON))
-                        .build();
-
-                String respBody;
-                try (Response response = HTTP_CLIENT.newCall(request).execute()) {
-                    respBody = response.body() != null ? response.body().string() : "";
-
-                    // 529 服务过载，触发重试
-                    if (response.code() == 529 || response.code() == 502 || response.code() == 503 || response.code() == 504) {
-                        log.warn("[LlmService] 请求失败 status={}，{}，准备重试 ({}/{})",
-                                response.code(), attempt < maxRetries ? "等待后重试" : "不再重试", attempt, maxRetries);
-                        if (attempt < maxRetries) {
-                            Thread.sleep(attempt * 2000L); // 2s, 4s, 6s 递增等待
-                            continue;
-                        }
-                    }
-
-                    if (!response.isSuccessful()) {
-                        String errMsg = "HTTP " + response.code() + ": " + respBody;
-                        log.error("[LlmService] 请求失败: {}", errMsg);
-                        return new LlmResult(null, null, false, errMsg);
-                    }
-                }
-
-                String rawContent = extractContent(respBody);
-                String cleanedContent = cleanThinkingContent(rawContent);
-
-                log.info("[LlmService] 模型={}, raw 长度={}, cleaned 长度={}",
-                        model, rawContent != null ? rawContent.length() : 0, cleanedContent.length());
-                log.info("[LlmService] raw 前300字: {}",
-                        rawContent != null ? rawContent.substring(0, Math.min(300, rawContent.length())) : "null");
-                log.info("[LlmService] cleaned 前300字: {}",
-                        cleanedContent.substring(0, Math.min(300, cleanedContent.length())));
-
-                return new LlmResult(rawContent, cleanedContent, true, null);
-
-            } catch (InterruptedException ie) {
-                Thread.currentThread().interrupt();
-                log.error("[LlmService] 重试被中断", ie);
-                return new LlmResult(null, null, false, "Request interrupted");
-            } catch (Exception e) {
-                lastException = e;
-                log.warn("[LlmService] 调用异常 attempt={}/{}: {}", attempt, maxRetries, e.getMessage());
-                if (attempt < maxRetries) {
-                    try { Thread.sleep(attempt * 2000L); } catch (InterruptedException sie) { Thread.currentThread().interrupt(); break; }
-                }
-            }
+        ResponseInfo resp;
+        try {
+            resp = decoratedCall.get();
+        } catch (Exception e) {
+            log.error("[LlmService] 重试耗尽，最终异常: {}", e.getMessage());
+            return new LlmResult(null, null, false, "LLM 调用失败（已重试3次）: " + e.getMessage());
         }
 
-        String finalError = lastException != null ? lastException.getMessage() : "unknown";
-        log.error("[LlmService] 调用失败（已重试{}次）: {}", maxRetries, finalError);
-        return new LlmResult(null, null, false, finalError);
+        if (resp == null || !resp.isSuccess()) {
+            String err = resp != null ? resp.body() : "LLM 调用失败";
+            return new LlmResult(null, null, false, err);
+        }
+
+        String rawContent = extractContent(resp.body());
+        String cleanedContent = cleanThinkingContent(rawContent);
+
+        log.info("[LlmService] 模型={}, raw 长度={}, cleaned 长度={}",
+                model, rawContent != null ? rawContent.length() : 0, cleanedContent.length());
+        if (rawContent != null && rawContent.length() > 300) {
+            log.info("[LlmService] raw 前300字: {}", rawContent.substring(0, 300));
+        }
+        if (cleanedContent.length() > 300) {
+            log.info("[LlmService] cleaned 前300字: {}", cleanedContent.substring(0, 300));
+        }
+
+        return new LlmResult(rawContent, cleanedContent, true, null);
+    }
+
+    /**
+     * 单次 HTTP 请求，不包含重试逻辑（重试由外层 Retry.decorateSupplier 处理）
+     *
+     * @throws RetryableApiException 5xx / 529 / 网络错误时抛出，触发 Resilience4j 重试
+     */
+    private ResponseInfo executeOnce(String url, String apiKey, String requestBody) {
+        Request request = new Request.Builder()
+                .url(url)
+                .addHeader("Authorization", "Bearer " + apiKey)
+                .addHeader("Content-Type", "application/json")
+                .post(RequestBody.create(requestBody, JSON))
+                .build();
+
+        try (Response response = HTTP_CLIENT.newCall(request).execute()) {
+            String body = response.body() != null ? response.body().string() : "";
+            int code = response.code();
+
+            // 5xx / 529 → 可重试
+            if (code == 529 || code == 502 || code == 503 || code == 504) {
+                log.warn("[LlmService] 服务端错误 status={}，触发重试", code);
+                throw new RetryableApiException("HTTP " + code);
+            }
+
+            if (!response.isSuccessful()) {
+                log.error("[LlmService] 请求失败 HTTP {}: {}", code, body);
+                return new ResponseInfo(body, code, false);
+            }
+
+            return new ResponseInfo(body, code, true);
+
+        } catch (java.net.SocketTimeoutException | java.net.ConnectException e) {
+            log.warn("[LlmService] 网络超时/连接失败，触发重试: {}", e.getMessage());
+            throw new RetryableApiException(e.getMessage());
+        } catch (java.io.IOException e) {
+            log.warn("[LlmService] IO 异常，触发重试: {}", e.getMessage());
+            throw new RetryableApiException(e.getMessage());
+        } catch (RetryableApiException e) {
+            throw e; // 上抛让 Retry 捕获
+        } catch (Exception e) {
+            log.error("[LlmService] 未知异常: {}", e.getMessage());
+            return new ResponseInfo(e.getMessage(), -1, false);
+        }
     }
 
     public String callLlm(List<Map<String, String>> messages, AppSettings.ModelConfig modelConfig) {
@@ -130,18 +199,14 @@ public class LlmService {
         if (rawContent == null) return "";
 
         String result = rawContent;
-        // 去掉 <begin_of_thought>...</end_of_thought> 块
         result = result.replaceAll("(?s)<begin_of_thought>.*?</end_of_thought>", "");
-        // 去掉 [(rating) ... ] 评分类推理块
         result = result.replaceAll("(?s)\\[rationale\\].*?\\[/rationale\\]", "");
         result = result.replaceAll("(?s)\\[rating\\].*?\\[/rating\\]", "");
-        // 去掉 0-10 points 评分类文字
         result = result.replaceAll("\\[\\d+(\\.\\d+)?\\s*points?\\]", "");
         result = result.replaceAll("(?m)^.*?rating.*?$", "");
         result = result.replaceAll("(?m)^.*?rationale.*?$", "");
         result = result.replaceAll("(?m)^.*?explanation.*?$", "");
 
-        // 找到第一个 { 或 [ 开始的位置，截取之后的内容
         int jsonStart = -1;
         for (int i = 0; i < result.length(); i++) {
             char c = result.charAt(i);

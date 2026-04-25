@@ -1,0 +1,18 @@
+# BGE Embedding Service 依赖
+# 安装：pip install -r requirements.txt
+
+# 模型推理核心（使用 sentence-transformers 加载 bge-small-zh-v1.5）
+sentence-transformers>=2.7.0
+
+# HuggingFace transformers（sentence-transformers 的底层依赖）
+transformers>=4.40.0
+
+# PyTorch（CPU 版本，GPU 机器上换成 torch.cuda）
+torch>=2.0.0
+
+# Web 服务
+fastapi>=0.111.0
+uvicorn[standard]>=0.29.0
+
+# 请求验证
+pydantic>=2.0.0

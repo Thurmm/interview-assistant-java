@@ -3,8 +3,7 @@ package com.interview.assistant.agent;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.interview.assistant.model.AppSettings;
-import com.interview.assistant.config.QdrantConfig;
-import com.interview.assistant.service.LlmService;
+import com.interview.assistant.service.LlmHelper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -20,7 +19,7 @@ import java.util.Map;
 @RequiredArgsConstructor
 public class EvaluatorAgent {
 
-    private final QdrantConfig qdrantConfig;
+    private final LlmHelper llmHelper;
     private final ObjectMapper objectMapper;
 
     public record EvaluationResult(
@@ -51,18 +50,18 @@ public class EvaluatorAgent {
 
         String prompt = buildEvaluationPrompt(question, answer, candidateProfile, retrievedContext);
 
-        String result = qdrantConfig.callLlm(
+        String result = llmHelper.call(
+                "Evaluator 评估",
                 List.of(
                         Map.of("role", "system", "content", "你是一位专业的面试官评估专家，评估要客观公正，分数要合理分布。"),
                         Map.of("role", "user", "content", prompt)
                 ),
-                modelConfig.getApiKey(),
-                modelConfig.getBaseUrl(),
-                modelConfig.getModel(),
-                0.7
+                modelConfig,
+                null
         );
 
-        if (result == null) {
+        if (result == null || result.isBlank()) {
+            log.warn("[Evaluator] LLM 返回为空，使用默认评估");
             return new EvaluationResult(5, "评估服务暂时不可用，回答已记录",
                     "建议从实际项目经验出发，结合具体案例来回答会更好。",
                     new DimensionScores(5, 5, 5, 5));

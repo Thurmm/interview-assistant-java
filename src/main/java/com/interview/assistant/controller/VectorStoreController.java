@@ -6,6 +6,7 @@ import com.interview.assistant.model.AppSettings;
 import com.interview.assistant.service.DocumentParserService;
 import com.interview.assistant.service.LlmService;
 import com.interview.assistant.service.SettingsService;
+import com.interview.assistant.service.VectorStoreException;
 import com.interview.assistant.service.VectorStoreService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -62,7 +63,21 @@ public class VectorStoreController {
     public Map<String, Object> search(@RequestParam String query, @RequestParam(defaultValue = "3") int topK) {
         try {
             String result = vectorStoreService.retrieveReferenceAnswer(query, topK);
+            if (result == null || result.isBlank()) {
+                // 空结果：知识库为空 或 embedding 服务不可用
+                boolean embeddingAvailable = vectorStoreService.isEmbeddingAvailable();
+                if (!embeddingAvailable) {
+                    return Map.of(
+                            "success", false,
+                            "error", "Embedding 服务不可用（账户余额不足或 API 未配置），请联系管理员处理。",
+                            "errorCode", "EMBEDDING_UNAVAILABLE"
+                    );
+                }
+                return Map.of("success", true, "query", query, "results", "", "empty", true);
+            }
             return Map.of("success", true, "query", query, "results", result);
+        } catch (VectorStoreException e) {
+            return Map.of("success", false, "error", e.getMessage(), "errorCode", e.getErrorCode());
         } catch (Exception e) {
             return Map.of("success", false, "error", e.getMessage());
         }

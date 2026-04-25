@@ -1,8 +1,8 @@
 package com.interview.assistant.agent;
 
-import com.interview.assistant.config.QdrantConfig;
 import com.interview.assistant.model.AppSettings.ModelConfig;
 import com.interview.assistant.model.Message;
+import com.interview.assistant.service.LlmHelper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -12,13 +12,16 @@ import java.util.Map;
 
 /**
  * Interviewer Agent（面试官 Agent）
+ *
+ * 使用 LlmHelper 统一处理 LLM 调用与异常，
+ * 保证日志规范（ERROR=失败、WARN=可恢复、INFO=关键流程）。
  */
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class InterviewerAgent {
 
-    private final QdrantConfig qdrantConfig;
+    private final LlmHelper llmHelper;
 
     public enum InterviewPhase {
         OPENING, TECHNICAL, BEHAVIORAL, DEEP_DIVE, WRAP_UP
@@ -37,16 +40,14 @@ public class InterviewerAgent {
         String systemPrompt = buildSystemPrompt(position, experience, candidateProfile, currentPhase, skillQuestionsContext != null ? skillQuestionsContext : null);
         String userPrompt = buildQuestionPrompt(questionIndex, conversationHistory, currentPhase);
 
-        String result = qdrantConfig.callLlm(
+        String result = llmHelper.call(
+                "Interviewer 生成问题",
                 List.of(Map.of("role", "system", "content", systemPrompt),
                         Map.of("role", "user", "content", userPrompt)),
-                modelConfig.getApiKey(),
-                modelConfig.getBaseUrl(),
-                modelConfig.getModel(),
-                0.7
+                modelConfig,
+                "请介绍一下你最近做的最有挑战性的项目是什么？"
         );
-
-        return result != null ? cleanOutput(result) : "请介绍一下你最近做的最有挑战性的项目是什么？";
+        return cleanOutput(result);
     }
 
     public boolean shouldEndInterview(
@@ -74,13 +75,13 @@ public class InterviewerAgent {
                 请直接回答"结束"或"继续"，不要加其他内容，不要加标点符号。
                 """.formatted(position, historySummary, questionCount);
 
-        String result = qdrantConfig.callLlm(
+        String result = llmHelper.call(
+                "Interviewer 结束判断",
                 List.of(Map.of("role", "system", "content", "你是一位专业的面试官，判断要客观公正。"),
                         Map.of("role", "user", "content", prompt)),
-                modelConfig.getApiKey(), modelConfig.getBaseUrl(), modelConfig.getModel(), 0.0
+                modelConfig,
+                "继续"
         );
-
-        if (result == null) return questionCount >= 10;
         boolean shouldEnd = result.trim().toLowerCase().contains("结束");
         log.info("面试结束判断: {} (questionCount={})", shouldEnd ? "结束" : "继续", questionCount);
         return shouldEnd;
@@ -99,14 +100,14 @@ public class InterviewerAgent {
                 直接输出结束语，不要加前缀。
                 """.formatted(company, position);
 
-        String result = qdrantConfig.callLlm(
+        String result = llmHelper.call(
+                "Interviewer 结束语",
                 List.of(Map.of("role", "system", "content", "你是一位专业、友善的面试官。"),
                         Map.of("role", "user", "content", prompt)),
-                modelConfig.getApiKey(), modelConfig.getBaseUrl(), modelConfig.getModel(), 0.7
+                modelConfig,
+                "非常感谢你的参与，今天的面试到此结束。我们会在一周内通知你结果。祝你好运！"
         );
-
-        return result != null ? cleanOutput(result)
-                : "非常感谢你的参与，今天的面试到此结束。我们会在一周内通知你结果。祝你好运！";
+        return cleanOutput(result);
     }
 
     public InterviewPhase nextPhase(InterviewPhase current, int questionCount) {

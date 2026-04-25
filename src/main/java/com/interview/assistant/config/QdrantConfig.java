@@ -2,11 +2,13 @@ package com.interview.assistant.config;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.github.resilience4j.retry.Retry;
+import io.github.resilience4j.retry.RetryConfig;
+import io.github.resilience4j.retry.RetryRegistry;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
-import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -14,7 +16,14 @@ import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Supplier;
 
+/**
+ * Qdrant / LLM API 调用配置
+ *
+ * 使用 Resilience4j RetryRegistry 编程式 API 实现指数退避重试（2s → 4s → 6s），
+ * 替代原来固定 3s 等待的手动重试逻辑。
+ */
 @Slf4j
 @Component
 public class QdrantConfig {
@@ -24,14 +33,51 @@ public class QdrantConfig {
 
     private final ObjectMapper objectMapper;
     private final HttpClient httpClient;
+    private final Retry retry;
 
-    public QdrantConfig(ObjectMapper objectMapper) {
+    public QdrantConfig(ObjectMapper objectMapper, RetryRegistry retryRegistry) {
         this.objectMapper = objectMapper;
         this.httpClient = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(10))
                 .build();
+
+        // 配置指数退避重试：2s → 4s → 6s
+        RetryConfig retryConfig = RetryConfig.custom()
+                .maxAttempts(3)
+                .waitDuration(Duration.ofSeconds(2))
+                .retryExceptions(
+                        java.io.IOException.class,
+                        java.net.SocketTimeoutException.class,
+                        java.net.ConnectException.class,
+                        RetryableApiException.class)
+                .build();
+        this.retry = retryRegistry.retry("qdrantRetry", retryConfig);
+
+        retry.getEventPublisher()
+                .onRetry(event -> log.warn("[QdrantConfig Retry] attempt={}/{}, error={}",
+                        event.getNumberOfRetryAttempts() + 1,
+                        retry.getRetryConfig().getMaxAttempts(),
+                        event.getLastThrowable().getMessage()))
+                .onError(event -> log.error("[QdrantConfig Retry] 最终失败 after {} attempts",
+                        event.getNumberOfRetryAttempts() + 1))
+                .onSuccess(event -> { /* 成功不打印 */ });
     }
 
+    /**
+     * 可重试 API 异常（429 / 500 / 520 / 网络错误）
+     */
+    public static class RetryableApiException extends RuntimeException {
+        public RetryableApiException(String message) {
+            super(message);
+        }
+    }
+
+    /**
+     * 调用 LLM（带 Resilience4j 指数退避重试）
+     *
+     * 重试条件：429 / 500 / 520 / 网络超时 / IO 异常
+     * 退避序列：2s → 4s → 6s
+     */
     public String callLlm(
             List<Map<String, String>> messages,
             String apiKey,
@@ -47,63 +93,73 @@ public class QdrantConfig {
 
         log.info("[QdrantConfig] HTTP — url={} model={}", effectiveBaseUrl, effectiveModel);
 
-        int maxRetries = 3;
-        for (int attempt = 1; attempt <= maxRetries; attempt++) {
-            try {
-                HttpRequest request = HttpRequest.newBuilder()
-                        .uri(URI.create(effectiveBaseUrl + "/chat/completions"))
-                        .header("Authorization", "Bearer " + effectiveKey)
-                        .header("Content-Type", "application/json")
-                        .timeout(Duration.ofSeconds(30))
-                        .POST(HttpRequest.BodyPublishers.ofString(jsonBody))
-                        .build();
+        Supplier<String> decoratedCall = Retry.decorateSupplier(retry,
+                () -> callOnce(effectiveKey, effectiveBaseUrl, jsonBody));
 
-                HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+        try {
+            return decoratedCall.get();
+        } catch (Exception e) {
+            log.error("[QdrantConfig] 重试耗尽，最终异常: {}", e.getMessage());
+            return null;
+        }
+    }
 
-                int statusCode = response.statusCode();
-                String output = response.body();
+    /**
+     * 单次 HTTP 调用
+     */
+    private String callOnce(String effectiveKey, String effectiveBaseUrl, String jsonBody) {
+        try {
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create(effectiveBaseUrl + "/chat/completions"))
+                    .header("Authorization", "Bearer " + effectiveKey)
+                    .header("Content-Type", "application/json")
+                    .timeout(Duration.ofSeconds(30))
+                    .POST(HttpRequest.BodyPublishers.ofString(jsonBody))
+                    .build();
 
-                if (statusCode == 429 || statusCode == 500 || statusCode == 520) {
-                    // Rate limit or server error - retry
-                    log.warn("[QdrantConfig] HTTP error ({}): {}, attempt {}/{}", 
-                            statusCode, output.substring(0, Math.min(150, output.length())), 
-                            attempt, maxRetries);
-                    if (attempt < maxRetries) {
-                        Thread.sleep(3000);
-                        continue;
-                    }
-                    return null;
-                }
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            int statusCode = response.statusCode();
+            String output = response.body();
 
-                if (statusCode != 200) {
-                    log.error("[QdrantConfig] HTTP error ({}): {}", statusCode, output);
-                    return null;
-                }
+            // 429 / 500 / 520 → 可重试
+            if (statusCode == 429 || statusCode == 500 || statusCode == 520) {
+                log.warn("[QdrantConfig] 可重试错误 HTTP {}: {}",
+                        statusCode, output != null ? output.substring(0, Math.min(150, output.length())) : "null");
+                throw new RetryableApiException("HTTP " + statusCode);
+            }
 
-                if (output == null || output.isBlank()) {
-                    log.warn("[QdrantConfig] HTTP 返回空");
-                    return null;
-                }
-
-                String content = extractContent(output);
-                log.info("[QdrantConfig] API响应前80字: {}", content != null ? content.substring(0, Math.min(80, content.length())) : "null");
-                return content;
-
-            } catch (IOException e) {
-                log.warn("[QdrantConfig] HTTP IO异常(attempt {}/{}): {}", attempt, maxRetries, e.getMessage());
-                if (attempt < maxRetries) {
-                    try { Thread.sleep(3000); } catch (InterruptedException ignored) {}
-                    continue;
-                }
-                return null;
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                log.error("[QdrantConfig] 线程中断", e);
+            if (statusCode != 200) {
+                log.error("[QdrantConfig] HTTP error ({}): {}", statusCode, output);
                 return null;
             }
-        }
 
-        return null;
+            if (output == null || output.isBlank()) {
+                log.warn("[QdrantConfig] HTTP 返回空");
+                return null;
+            }
+
+            String content = extractContent(output);
+            if (content != null && content.length() > 80) {
+                log.info("[QdrantConfig] API响应前80字: {}", content.substring(0, 80));
+            }
+            return content;
+
+        } catch (java.net.SocketTimeoutException | java.net.ConnectException e) {
+            log.warn("[QdrantConfig] 网络超时/连接失败，触发重试: {}", e.getMessage());
+            throw new RetryableApiException(e.getMessage());
+        } catch (java.io.IOException e) {
+            log.warn("[QdrantConfig] IO 异常，触发重试: {}", e.getMessage());
+            throw new RetryableApiException(e.getMessage());
+        } catch (RetryableApiException e) {
+            throw e;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            log.error("[QdrantConfig] 线程中断", e);
+            return null;
+        } catch (Exception e) {
+            log.error("[QdrantConfig] 未知异常: {}", e.getMessage());
+            return null;
+        }
     }
 
     private String buildChatBody(List<Map<String, String>> messages, String model, Double temperature) {
@@ -125,9 +181,6 @@ public class QdrantConfig {
 
     /**
      * 从 MiniMax / OpenAI API 响应中提取 content
-     *
-     * MiniMax 响应格式:
-     * {"id":"...","choices":[{"index":0,"message":{"role":"assistant","content":"实际回答"},"finish_reason":"stop"}],"usage":{...}}
      */
     private String extractContent(String text) {
         try {
@@ -144,10 +197,8 @@ public class QdrantConfig {
                             .trim();
                 }
             }
-            // Fallback: return first 200 chars
             return text.substring(0, Math.min(200, text.length()));
         } catch (Exception e) {
-            // JSON parse failed, return trimmed text
             return text != null ? text.trim() : "";
         }
     }
@@ -159,9 +210,5 @@ public class QdrantConfig {
                 .replace("\n", "\\n")
                 .replace("\r", "\\r")
                 .replace("\t", "\\t");
-    }
-
-    private String escapeShell(String s) {
-        return s.replace("'", "'\\''");
     }
 }

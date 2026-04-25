@@ -1,6 +1,7 @@
 package com.interview.assistant.controller;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.interview.assistant.config.ApiKeyMaskConverter;
 import com.interview.assistant.model.AppSettings;
 import com.interview.assistant.service.SettingsService;
 import lombok.RequiredArgsConstructor;
@@ -209,7 +210,7 @@ public class VoiceController {
 
             // Build WebSocket URL with correct authentication
             String wsUrl = buildXfyunWsUrl(voice.getAppId(), voice.getApiKey(), voice.getApiSecret());
-            log.info("Connecting to iFlytek WebSocket: {}", wsUrl.substring(0, Math.min(80, wsUrl.length())));
+            log.info("Connecting to iFlytek WebSocket: {}", ApiKeyMaskConverter.mask(wsUrl.substring(0, Math.min(80, wsUrl.length()))));
 
             // Convert audio to PCM 16k 16bit mono WAV
             byte[] pcmData = convertToPcm16k16bitMonoWav(audioData);
@@ -407,15 +408,15 @@ public class VoiceController {
         
         log.info("=== iFlytek WebSocket Auth ===");
         log.info("appId: {}", appId);
-        log.info("apiKey (raw): {}", apiKey);
+        log.info("apiKey: {}", ApiKeyMaskConverter.mask(apiKey));
         log.info("apiKey length: {}", apiKey.length());
-        log.info("apiSecret (raw): {}", apiSecret);
+        log.info("apiSecret: {}", ApiKeyMaskConverter.mask(apiSecret));
         log.info("apiSecret length: {}", apiSecret.length());
         log.info("date: {}", date);
         
         // Try raw string first, also show hex decode for comparison
         byte[] secretBytesRaw = apiSecret.getBytes(StandardCharsets.UTF_8);
-        log.info("apiSecret as raw bytes length: {}", secretBytesRaw.length);
+        log.info("apiSecret raw bytes length: {}", secretBytesRaw.length);
         
         byte[] secretBytes = secretBytesRaw; // default to raw
         
@@ -425,15 +426,8 @@ public class VoiceController {
             for (int i = 0; i < 16; i++) {
                 secretBytesHex[i] = (byte) Integer.parseInt(apiSecret.substring(i*2, i*2+2), 16);
             }
-            log.info("apiSecret as hex decode length: {}", secretBytesHex.length);
-            // Print both for comparison
-            StringBuilder rawHex = new StringBuilder();
-            for (byte b : secretBytesRaw) rawHex.append(String.format("%02x", b));
-            StringBuilder decHex = new StringBuilder();
-            for (byte b : secretBytesHex) decHex.append(String.format("%02x", b));
-            log.info("RAW secret hex: {}", rawHex);
-            log.info("HEX secret hex: {}", decHex);
-            log.info("Hex decode succeeded! Switching to HEX secret");
+            log.info("apiSecret hex decode length: {}", secretBytesHex.length);
+            log.info("Hex decode succeeded! Using HEX secret");
             secretBytes = secretBytesHex;
         } catch (Exception e) {
             log.warn("Hex decode failed ({}), using raw string", e.getMessage());
@@ -454,8 +448,8 @@ public class VoiceController {
         // Authorization origin
         String authorizationOrigin = "api_key=\"" + apiKey + "\", algorithm=\"hmac-sha256\", headers=\"host date request-line\", signature=\"" + signature + "\"";
         String authorization = Base64.getEncoder().encodeToString(authorizationOrigin.getBytes(StandardCharsets.UTF_8));
-        log.info("Authorization origin: {}", authorizationOrigin);
-        log.info("Authorization (base64): {}", authorization);
+        log.info("Authorization origin: {}", ApiKeyMaskConverter.mask(authorizationOrigin));
+        log.info("Authorization (base64): {}", ApiKeyMaskConverter.mask(authorization));
         
         // Build URL
         String params = "appid=" + URLEncoder.encode(appId, StandardCharsets.UTF_8) + 
@@ -464,7 +458,7 @@ public class VoiceController {
                        "&authorization=" + URLEncoder.encode(authorization, StandardCharsets.UTF_8);
         
         String wsUrl = "wss://iat.xf-yun.com/v1?" + params;
-        log.info("Final WebSocket URL: {}", wsUrl);
+        log.info("Final WebSocket URL: {}", ApiKeyMaskConverter.mask(wsUrl));
         log.info("=== End iFlytek Auth ===");
         
         return wsUrl;
