@@ -28,7 +28,8 @@
 
     <logger name="com.interview.assistant" level="INFO"/>
     <logger name="com.interview.assistant.config.QdrantConfig" level="INFO"/>
-    <logger name="com.interview.assistant.service.LlmService" level="INFO"/>
+    <logger name="com.interview.assistant.service.LlmService" level="DEBUG"/>
+    <logger name="com.interview.assistant.controller.InterviewController" level="DEBUG"/>
 
     <root level="INFO">
         <appender-ref ref="CONSOLE"/>

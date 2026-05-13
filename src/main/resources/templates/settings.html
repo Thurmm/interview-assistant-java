@@ -110,6 +110,7 @@
                             <option value="openai">OpenAI (GPT-4/GPT-3.5)</option>
                             <option value="claude">Anthropic Claude</option>
                             <option value="minimax">MiniMax (海螺AI)</option>
+                            <option value="deepseek">DeepSeek</option>
                             <option value="custom">自定义 (兼容OpenAI格式)</option>
                         </select>
                     </div>
@@ -318,8 +319,8 @@
             const modelSelectGroup = document.getElementById('model-select-group');
             const modelInputGroup = document.getElementById('model-input-group');
             
-            // minimax 和 custom 都需要显示 URL 输入
-            if (type === 'custom' || type === 'minimax') {
+            // minimax / deepseek 需要显示 URL 输入
+            if (type === 'custom' || type === 'minimax' || type === 'deepseek') {
                 customGroup.style.display = 'block';
             } else {
                 customGroup.style.display = 'none';
@@ -340,6 +341,7 @@
                 openai: 'https://api.openai.com/v1',
                 claude: 'https://api.anthropic.com',
                 minimax: 'https://api.minimax.chat/v1',
+                deepseek: 'https://api.deepseek.com',
                 custom: ''
             };
             if (!urlInput.value || urlInput.value === 'https://api.openai.com/v1' || urlInput.value === 'https://api.anthropic.com') {
@@ -380,6 +382,10 @@
                     {value: 'abab5.5-chat', label: 'ABAB5.5-Chat'},
                     {value: 'MiniMax-Text-01', label: 'MiniMax-Text-01'},
                     {value: 'MiniMax-VL-01', label: 'MiniMax-VL-01 (视觉)'}
+                ],
+                deepseek: [
+                    {value: 'deepseek-chat', label: 'DeepSeek V3 (deepseek-chat)'},
+                    {value: 'deepseek-reasoner', label: 'DeepSeek R1 (deepseek-reasoner)'}
                 ]
             };
 

@@ -5,28 +5,25 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
-import org.springframework.web.client.RestClient;
 
+import java.io.OutputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 /**
  * BGE 本地嵌入服务客户端
  *
  * 调用本地 Python FastAPI 服务的 HTTP 接口，
  * 底层使用 bge-small-zh-v1.5 模型（233MB，中文语义向量）。
- *
- * 服务地址：http://localhost:8001
- * 接口路径：POST /v1/embeddings  或  POST /embed
- *
- * 请求体：{"texts": ["文本1", "文本2"]}   或   {"texts": "单条文本"}
- * 响应体：{"model":"BAAI/bge-small-zh-v1.5","dim":512,"embeddings":[[0.1,...], [0.2,...]]}
  */
 @Slf4j
 @Service
 public class BgeEmbeddingService {
 
-    private final RestClient restClient;
     private final ObjectMapper objectMapper;
     private final String baseUrl;
     /** 缓存向量维度（启动时探测一次） */
@@ -38,18 +35,11 @@ public class BgeEmbeddingService {
     ) {
         this.baseUrl = baseUrl;
         this.objectMapper = objectMapper;
-        this.restClient = RestClient.builder()
-                .baseUrl(baseUrl)
-                .defaultHeader("Content-Type", "application/json")
-                .build();
         log.info("[BgeEmbeddingService] 初始化完成，baseUrl={}", baseUrl);
     }
 
     /**
      * 将文本转换为向量
-     *
-     * @param text 输入文本
-     * @return 向量（float[]），失败时返回 null
      */
     public float[] embed(String text) {
         if (text == null || text.isBlank()) {
@@ -57,16 +47,14 @@ public class BgeEmbeddingService {
         }
 
         try {
-            String requestBody = objectMapper.writeValueAsString(
-                    new BgeRequest(List.of(text)));
-
-            String responseBody = restClient.post()
-                    .uri("/v1/embeddings")
-                    .body(requestBody)
-                    .retrieve()
-                    .body(String.class);
-
-            return parseFirstEmbedding(responseBody);
+            String json = objectMapper.writeValueAsString(
+                    Map.of(
+                            "model", "BAAI/bge-small-zh-v1.5",
+                            "texts", List.of(text),
+                            "normalize", true
+                    ));
+            String response = post("/v1/embeddings", json);
+            return parseFirstEmbedding(response);
 
         } catch (Exception e) {
             log.warn("[BgeEmbeddingService] 向量化失败: {}", e.getMessage());
@@ -99,15 +87,15 @@ public class BgeEmbeddingService {
         }
 
         try {
-            String requestBody = objectMapper.writeValueAsString(
-                    new BgeRequest(List.of("dim-check")));
-            String responseBody = restClient.post()
-                    .uri("/v1/embeddings")
-                    .body(requestBody)
-                    .retrieve()
-                    .body(String.class);
+            String json = objectMapper.writeValueAsString(
+                    Map.of(
+                            "model", "BAAI/bge-small-zh-v1.5",
+                            "texts", List.of("dim-check"),
+                            "normalize", true
+                    ));
+            String response = post("/v1/embeddings", json);
 
-            JsonNode root = objectMapper.readTree(responseBody);
+            JsonNode root = objectMapper.readTree(response);
             int dim = root.path("dim").asInt(0);
             if (dim > 0) {
                 cachedDimension = dim;
@@ -125,19 +113,52 @@ public class BgeEmbeddingService {
      */
     public boolean isAvailable() {
         try {
-            String requestBody = objectMapper.writeValueAsString(
-                    new BgeRequest(List.of("health")));
-            String responseBody = restClient.post()
-                    .uri("/v1/embeddings")
-                    .body(requestBody)
-                    .retrieve()
-                    .body(String.class);
+            String json = objectMapper.writeValueAsString(
+                    Map.of(
+                            "model", "BAAI/bge-small-zh-v1.5",
+                            "texts", List.of("health"),
+                            "normalize", true
+                    ));
+            String response = post("/v1/embeddings", json);
 
-            JsonNode root = objectMapper.readTree(responseBody);
+            JsonNode root = objectMapper.readTree(response);
             return root.has("embeddings") && root.get("embeddings").isArray();
         } catch (Exception e) {
             log.warn("[BgeEmbeddingService] 服务不可用: {}", e.getMessage());
             return false;
+        }
+    }
+
+    /**
+     * 发送 POST 请求
+     */
+    private String post(String path, String json) throws Exception {
+        URL url = new URL(baseUrl + path);
+        HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+        conn.setRequestMethod("POST");
+        conn.setRequestProperty("Content-Type", "application/json");
+        conn.setDoOutput(true);
+        conn.setConnectTimeout(5000);
+        conn.setReadTimeout(30000);
+
+        try (OutputStream os = conn.getOutputStream()) {
+            os.write(json.getBytes(StandardCharsets.UTF_8));
+            os.flush();
+        }
+
+        int responseCode = conn.getResponseCode();
+        if (responseCode != 200) {
+            throw new RuntimeException("HTTP " + responseCode + ": " + conn.getResponseMessage());
+        }
+
+        try (java.io.BufferedReader reader = new java.io.BufferedReader(
+                new java.io.InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8))) {
+            StringBuilder response = new StringBuilder();
+            String line;
+            while ((line = reader.readLine()) != null) {
+                response.append(line);
+            }
+            return response.toString();
         }
     }
 
@@ -161,14 +182,5 @@ public class BgeEmbeddingService {
             vector[i] = (float) first.get(i).asDouble();
         }
         return vector;
-    }
-
-    /**
-     * BGE API 请求体
-     */
-    private record BgeRequest(String model, List<String> texts, boolean normalize) {
-        public BgeRequest(List<String> texts) {
-            this("BAAI/bge-small-zh-v1.5", texts, true);
-        }
     }
 }

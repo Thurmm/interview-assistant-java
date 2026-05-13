@@ -1015,3 +1015,57 @@ body {
     max-height: 200px;
     overflow-y: auto;
 }
+
+/* 流式输出样式 */
+#streaming-cursor {
+    display: inline-block;
+    width: 8px;
+    height: 16px;
+    background: var(--primary);
+    margin-right: 2px;
+    animation: blink 1s infinite;
+    vertical-align: middle;
+}
+
+@keyframes blink {
+    0%, 50% { opacity: 1; }
+    51%, 100% { opacity: 0; }
+}
+
+/* 评估详情样式 */
+.eval-details {
+    margin: 8px 0;
+    padding: 8px;
+    border-radius: 6px;
+    font-size: 13px;
+}
+
+.eval-details.score-high { background: #d1fae5; }
+.eval-details.score-mid { background: #fef3c7; }
+.eval-details.score-low { background: #fee2e2; }
+
+.eval-details summary { cursor: pointer; font-weight: 500; }
+.eval-expand { font-size: 11px; color: #6b7280; margin-left: 8px; }
+.eval-content p { margin-bottom: 8px; }
+
+/* 流式消息中的打字机效果 */
+.message-bubble.streaming {
+    min-height: 20px;
+}
+
+.streaming-indicator {
+    display: inline-block;
+    margin-left: 4px;
+    color: var(--gray-400);
+}
+
+.streaming-indicator::after {
+    content: '...';
+    animation: dots 1.5s infinite;
+}
+
+@keyframes dots {
+    0%, 20% { content: '.'; }
+    40% { content: '..'; }
+    60%, 100% { content: '...'; }
+}

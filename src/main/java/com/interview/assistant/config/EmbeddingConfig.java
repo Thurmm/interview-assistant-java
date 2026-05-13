@@ -27,7 +27,7 @@ public class EmbeddingConfig {
     @Value("${spring.ai.embedding.provider:bge}")
     private String embeddingProvider;
 
-    @Value("${spring.ai.embedding.bge.base-url:http://localhost:11434}")
+    @Value("${spring.ai.embedding.bge.base-url:http://localhost:8001}")
     private String bgeBaseUrl;
 
     @Value("${spring.ai.embedding.bge.model:bge-small-zh-v1.5}")

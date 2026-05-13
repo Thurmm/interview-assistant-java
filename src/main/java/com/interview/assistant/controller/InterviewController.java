@@ -12,16 +12,21 @@ import com.interview.assistant.service.ReportService;
 import com.interview.assistant.service.SettingsService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.Executors;
+
+import org.springframework.http.HttpHeaders;
+import reactor.core.Disposable;
+import reactor.core.scheduler.Schedulers;
 
 @Slf4j
 @RestController
@@ -179,6 +184,68 @@ public class InterviewController {
                     "code", 400
             ));
         }
+    }
+
+    /**
+     * 流式回答接口：评分即时返回，下一题边生成边推送
+     * GET /api/conversation/{id}/stream-answer?answer=xxx
+     * 使用 SseEmitter 非阻塞方式实现 SSE
+     */
+    @GetMapping(value = "/conversation/{id}/stream-answer", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public SseEmitter streamAnswer(@PathVariable String id, @RequestParam String answer) {
+        SseEmitter emitter = new SseEmitter(Long.MAX_VALUE);
+
+        AppSettings settings = settingsService.getSettings();
+        AppSettings.ModelConfig modelConfig = settings.getModelConfig();
+
+        Disposable subscription = conversationService.streamProcessAnswer(id, answer, modelConfig)
+                .subscribeOn(Schedulers.boundedElastic())
+                .subscribe(
+                    eventStr -> {
+                        int sep = eventStr.indexOf('|');
+                        if (sep < 0) {
+                            log.warn("[streamAnswer] 未知事件格式: {}", eventStr);
+                            return;
+                        }
+                        String eventName = eventStr.substring(0, sep);
+                        String jsonData = eventStr.substring(sep + 1);
+                        log.debug("[streamAnswer] 事件: {}, 数据量: {}", eventName, jsonData.length());
+                        try {
+                            emitter.send(SseEmitter.event().name(eventName).data(jsonData));
+                        } catch (IOException e) {
+                            log.warn("[streamAnswer] 发送事件失败: {}", e.getMessage());
+                        }
+                    },
+                    error -> {
+                        log.error("[streamAnswer] 异常: {}", error.getMessage());
+                        try {
+                            emitter.send(SseEmitter.event().name("error").data("{\"message\":\"" + error.getMessage() + "\"}"));
+                        } catch (IOException e) {
+                            log.warn("[streamAnswer] 发送错误事件失败: {}", e.getMessage());
+                        }
+                        emitter.completeWithError(error);
+                    },
+                    () -> {
+                        // question_complete 已在 Flux 链中发送（含权威完整文本），此处只需关闭连接
+                        emitter.complete();
+                    }
+                );
+
+        // SSE 连接关闭时主动取消下游 Flux 订阅，防止后台线程泄漏
+        emitter.onCompletion(() -> {
+            log.debug("[streamAnswer] SSE 连接完成，取消订阅");
+            subscription.dispose();
+        });
+        emitter.onTimeout(() -> {
+            log.warn("[streamAnswer] SSE 连接超时，取消订阅");
+            subscription.dispose();
+        });
+        emitter.onError(e -> {
+            log.warn("[streamAnswer] SSE 错误: {}，取消订阅", e.getMessage());
+            subscription.dispose();
+        });
+
+        return emitter;
     }
 
     @PostMapping("/conversation/{id}/stop")

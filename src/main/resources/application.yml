@@ -30,7 +30,7 @@ spring:
       provider: bge
       # BGE 本地服务配置（当 provider=bge 时使用）
       bge:
-        base-url: http://localhost:11434
+        base-url: http://localhost:8001
         model: bge-small-zh-v1.5
       # MiniMax / OpenAI 在线 API 配置（当 provider=minimax 时使用）
       minimax:

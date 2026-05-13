@@ -16,13 +16,17 @@ import com.interview.assistant.util.JsonFileUtil;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
+import java.io.IOException;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.stream.Collectors;
+
+import reactor.core.publisher.Flux;
 
 /**
  * 对话服务（V2 重构：接入 Multi-Agent）
@@ -45,6 +49,8 @@ public class ConversationService {
     private final InterviewerAgent interviewerAgent;
     private final EvaluatorAgent evaluatorAgent;
     private final VectorStoreService vectorStoreService;
+    private final LlmService llmService;
+    private final ObjectMapper objectMapper;
 
     // ============ 内存缓存（解决高并发文件锁冲突）===========
     private final ConcurrentHashMap<String, Conversation> convoCache = new ConcurrentHashMap<>();
@@ -345,6 +351,446 @@ public class ConversationService {
                 .isFinished("completed".equals(convo.getStatus()))
                 .messages(convo.getMessages())
                 .build();
+    }
+
+    // ============ 流式回答处理 ============
+
+    /**
+     * 流式处理回答：
+     * 1. 同步评分，立即推送评分结果
+     * 2. 判断是否结束
+     * 3. 若未结束，流式推送下一题（边生成边推送）
+     *
+     * 整个流程包在 Flux.defer 中，使同步评分也在 subscribeOn 线程上运行，
+     * 避免阻塞 Tomcat 线程，确保 SseEmitter 能立即返回给前端。
+     */
+    public Flux<String> streamProcessAnswer(
+            String convoId,
+            String userAnswer,
+            ModelConfig modelConfig
+    ) {
+        return Flux.defer(() -> {
+            ReentrantLock lock = lockFor(convoId);
+            if (!lock.tryLock()) {
+                return Flux.just(toSse("error", Map.of("message", "系统繁忙，请稍后")));
+            }
+
+            try {
+                Conversation convo = convoCache.get(convoId);
+                if (convo == null) {
+                    return Flux.just(toSse("error", Map.of("message", "对话不存在")));
+                }
+
+                String now = LocalDateTime.now().format(DTF);
+                String position = getSetting(convo, "position", "软件工程师");
+                String experience = getSetting(convo, "experience", "");
+                String candidateProfile = buildProfileSummary(convo.getCandidateProfile(), position, experience);
+
+                // ===== 1. 获取当前问题并评分（同步，立刻返回）=====
+                String currentQuestion = convo.getMessages().stream()
+                        .filter(m -> Boolean.TRUE.equals(m.getIsQuestion()))
+                        .reduce((first, second) -> second)
+                        .map(Message::getContent)
+                        .orElse("");
+
+                String retrievedContext = "";
+                if (vectorStoreService.isAvailable()) {
+                    try {
+                        retrievedContext = vectorStoreService.retrieveReferenceAnswer(currentQuestion, 2);
+                    } catch (Exception e) {
+                        log.warn("RAG 检索失败: {}", e.getMessage());
+                    }
+                }
+
+                EvaluatorAgent.EvaluationResult evalResult = evaluatorAgent.evaluate(
+                        currentQuestion, userAnswer, modelConfig, candidateProfile, retrievedContext);
+
+                // 添加用户回答消息（含评分）
+                convo.getMessages().add(Message.builder()
+                        .role("user")
+                        .content(userAnswer)
+                        .timestamp(now)
+                        .score(evalResult.score())
+                        .feedback(evalResult.feedback())
+                        .modelAnswer(evalResult.modelAnswer())
+                        .build());
+
+                // ===== 2. 判断是否结束 =====
+                int questionCount = convo.getCurrentQuestionIndex() != null ? convo.getCurrentQuestionIndex() : 0;
+                InterviewPhase currentPhase = parsePhase(convo.getInterviewPhase());
+                InterviewPhase nextPhase = interviewerAgent.nextPhase(currentPhase, questionCount + 1);
+                convo.setInterviewPhase(nextPhase.name());
+
+                boolean shouldEnd = interviewerAgent.shouldEndInterview(
+                        convo.getMessages(), position, questionCount, modelConfig);
+
+                String evalJson = buildEvalJson(evalResult);
+
+                if (shouldEnd) {
+                    String closing = interviewerAgent.generateClosingMessage(position,
+                            getSetting(convo, "company", ""), modelConfig);
+
+                    convo.getMessages().add(Message.builder()
+                            .role("interviewer")
+                            .content(closing)
+                            .timestamp(LocalDateTime.now().format(DTF))
+                            .build());
+                    convo.setStatus("completed");
+                    convo.setUpdatedAt(LocalDateTime.now().format(DTF));
+                    saveConversations(convoCache.values().stream().toList());
+
+                    // 将结束语拆分成小块流式推送，实现打字机效果
+                    List<String> closingChunks = splitIntoChunks(closing, 5);
+
+                    return Flux.concat(
+                            Flux.just(toSse("eval", objectMapper.readValue(evalJson, Map.class))),
+                            Flux.fromIterable(closingChunks).map(chunk -> toSse("question", chunk)),
+                            Flux.just(toSse("question_full", closing), toSse("interview_complete", closing))
+                    );
+                }
+
+                // ===== 3. 流式生成下一题 =====
+                convo.setCurrentQuestionIndex(questionCount + 1);
+                convo.setUpdatedAt(now);
+                saveConversations(convoCache.values().stream().toList()); // 先保存用户回答
+
+                // 构建下一题 prompt
+                String skillQuestionsContext = null;
+                if (convo.getCandidateProfile() != null
+                        && convo.getCandidateProfile().getTechStack() != null
+                        && !convo.getCandidateProfile().getTechStack().isEmpty()) {
+                    try {
+                        skillQuestionsContext = vectorStoreService.retrieveSkillQuestions(
+                                convo.getCandidateProfile().getTechStack(), 5);
+                    } catch (Exception e) {
+                        log.warn("检索技能相关题目失败: {}", e.getMessage());
+                    }
+                }
+
+                String systemPrompt = interviewerAgent.buildSystemPrompt(position, experience,
+                        candidateProfile, nextPhase, skillQuestionsContext);
+                String userPrompt = interviewerAgent.buildQuestionPrompt(questionCount + 1,
+                        convo.getMessages(), nextPhase);
+
+                List<Map<String, String>> promptMessages = List.of(
+                        Map.of("role", "system", "content", systemPrompt),
+                        Map.of("role", "user", "content", userPrompt)
+                );
+
+                final int finalQuestionCount = questionCount;
+                final InterviewPhase finalNextPhase = nextPhase;
+
+                // 收集完整题目，结束后存入 conversation
+                // 注意：不按 chunk 粒度过滤 <think> 标签（标签可能跨 chunk 边界），
+                // 而是发送原始 chunk 到前端，由前端在完整文本上做 regex 清理，
+                // 服务端在 doOnComplete 中用 regex 清理后再持久化。
+                StringBuilder fullQuestion = new StringBuilder();
+
+                return Flux.concat(
+                        // 评分结果（立即推送）
+                        Flux.just(toSse("eval", objectMapper.readValue(evalJson, Map.class))),
+                        // 下一题流（发送原始 chunk，前端负责清洗显示）
+                        llmService.streamCallLlm(promptMessages, modelConfig)
+                                .doOnNext(chunk -> fullQuestion.append(chunk))
+                                .map(chunk -> toSse("question", chunk))
+                                .concatWith(Flux.defer(() -> {
+                                    // 流结束后，发送服务端权威的完整题目文本，替代前端可能丢失 chunk 的累加结果
+                                    String full = llmService.cleanTextContent(fullQuestion.toString());
+                                    if (full.isBlank()) {
+                                        // 即使 LLM 返回为空，也发送 question_complete 确保前端状态恢复
+                                        return Flux.just(toSse("question_complete", ""));
+                                    }
+                                    return Flux.just(
+                                            toSse("question_full", full),
+                                            toSse("question_complete", full)
+                                    );
+                                }))
+                                .doOnComplete(() -> {
+                                    String q = fullQuestion.toString();
+                                    q = llmService.cleanTextContent(q);
+                                    if (!q.isEmpty()) {
+                                        ReentrantLock writeLock = lockFor(convoId);
+                                        writeLock.lock();
+                                        try {
+                                            convo.getMessages().add(Message.builder()
+                                                    .role("interviewer")
+                                                    .content(q)
+                                                    .timestamp(LocalDateTime.now().format(DTF))
+                                                    .isQuestion(true)
+                                                    .build());
+                                            convo.setCurrentQuestionIndex(finalQuestionCount + 1);
+                                            convo.setUpdatedAt(LocalDateTime.now().format(DTF));
+                                            saveConversations(convoCache.values().stream().toList());
+                                            log.info("[streamProcessAnswer] 下一题已保存: 前50字={}", q.substring(0, Math.min(50, q.length())));
+                                        } finally {
+                                            writeLock.unlock();
+                                        }
+                                    }
+                                    convo.setStatus("in_progress");
+                                })
+                                .onErrorResume(e -> {
+                                    log.error("[streamProcessAnswer] 流式生成下一题失败: {}", e.getMessage());
+                                    return Flux.just(toSse("error", e.getMessage()));
+                                })
+                );
+
+            } catch (Exception e) {
+                log.error("[streamProcessAnswer] 异常: {}", e.getMessage(), e);
+                return Flux.just(toSse("error", Map.of("message", "处理失败: " + e.getMessage())));
+            } finally {
+                if (lock.isHeldByCurrentThread()) {
+                    lock.unlock();
+                }
+            }
+        });
+    }
+
+    private String buildEvalJson(EvaluatorAgent.EvaluationResult evalResult) {
+        try {
+            return objectMapper.writeValueAsString(Map.of(
+                    "score", evalResult.score(),
+                    "feedback", evalResult.feedback() != null ? evalResult.feedback() : "",
+                    "model_answer", evalResult.modelAnswer() != null ? evalResult.modelAnswer() : "",
+                    "dimension_scores", Map.of(
+                            "technical_depth", evalResult.dimensionScores().technicalDepth(),
+                            "expression_clarity", evalResult.dimensionScores().expressionClarity(),
+                            "logic_coherence", evalResult.dimensionScores().logicCoherence(),
+                            "experience_relevance", evalResult.dimensionScores().experienceRelevance()
+                    )
+            ));
+        } catch (Exception e) {
+            return "{\"score\":0,\"feedback\":\"\",\"model_answer\":\"\"}";
+        }
+    }
+
+    /**
+     * 将文本拆分成指定大小的块，用于流式推送实现打字机效果
+     */
+    private List<String> splitIntoChunks(String text, int chunkSize) {
+        List<String> chunks = new ArrayList<>();
+        if (text == null || text.isEmpty() || chunkSize <= 0) return chunks;
+        for (int i = 0; i < text.length(); i += chunkSize) {
+            chunks.add(text.substring(i, Math.min(i + chunkSize, text.length())));
+        }
+        return chunks;
+    }
+
+    /**
+     * Converts an event to a pipe-separated string "eventName|jsonData".
+     * Jackson serializes to JSON (escapes newlines properly in string values).
+     * The controller splits by '|' and uses SseEmitter.event().name().data() API
+     * which properly handles multi-byte UTF-8 and special characters.
+     */
+    private String toSse(String eventName, Object data) {
+        try {
+            String json = objectMapper.writeValueAsString(data);
+            return eventName + "|" + json;
+        } catch (Exception e) {
+            return eventName + "|{\"error\":\"" + e.getMessage().replace("\"", "\\\"") + "\"}";
+        }
+    }
+
+    /**
+     * 阻塞式流式处理回答（不使用 Flux）。
+     * 在后台线程中执行：评分→推送→判断结束→流式生成下一题→推送
+     * 直接写入 SseEmitter 确保实时推送。
+     */
+    public void streamProcessAnswerBlocking(
+            String convoId,
+            String userAnswer,
+            ModelConfig modelConfig,
+            org.springframework.web.servlet.mvc.method.annotation.SseEmitter emitter
+    ) {
+        ReentrantLock lock = lockFor(convoId);
+        lock.lock();
+        try {
+            Conversation convo = convoCache.get(convoId);
+            if (convo == null) {
+                emitter.send(SseEmitter.event().name("error").data("{\"message\":\"对话不存在\"}"));
+                return;
+            }
+
+            String now = LocalDateTime.now().format(DTF);
+            String position = getSetting(convo, "position", "软件工程师");
+            String experience = getSetting(convo, "experience", "");
+            String candidateProfile = buildProfileSummary(convo.getCandidateProfile(), position, experience);
+
+            // 1. 获取当前问题并评分
+            String currentQuestion = convo.getMessages().stream()
+                    .filter(m -> Boolean.TRUE.equals(m.getIsQuestion()))
+                    .reduce((first, second) -> second)
+                    .map(Message::getContent)
+                    .orElse("");
+
+            String retrievedContext = "";
+            if (vectorStoreService.isAvailable()) {
+                try {
+                    retrievedContext = vectorStoreService.retrieveReferenceAnswer(currentQuestion, 2);
+                } catch (Exception e) {
+                    log.warn("RAG 检索失败: {}", e.getMessage());
+                }
+            }
+
+            EvaluatorAgent.EvaluationResult evalResult = evaluatorAgent.evaluate(
+                    currentQuestion, userAnswer, modelConfig, candidateProfile, retrievedContext);
+
+            // 添加用户回答
+            convo.getMessages().add(Message.builder()
+                    .role("user")
+                    .content(userAnswer)
+                    .timestamp(now)
+                    .score(evalResult.score())
+                    .feedback(evalResult.feedback())
+                    .modelAnswer(evalResult.modelAnswer())
+                    .build());
+
+            // 2. 推送评分结果
+            String evalJson = buildEvalJson(evalResult);
+            emitter.send(SseEmitter.event().name("eval").data(evalJson));
+
+            // 3. 判断是否结束
+            int questionCount = convo.getCurrentQuestionIndex() != null ? convo.getCurrentQuestionIndex() : 0;
+            InterviewPhase currentPhase = parsePhase(convo.getInterviewPhase());
+            InterviewPhase nextPhase = interviewerAgent.nextPhase(currentPhase, questionCount + 1);
+            convo.setInterviewPhase(nextPhase.name());
+
+            boolean shouldEnd = interviewerAgent.shouldEndInterview(
+                    convo.getMessages(), position, questionCount, modelConfig);
+
+            if (shouldEnd) {
+                String closing = interviewerAgent.generateClosingMessage(position,
+                        getSetting(convo, "company", ""), modelConfig);
+                convo.getMessages().add(Message.builder()
+                        .role("interviewer")
+                        .content(closing)
+                        .timestamp(LocalDateTime.now().format(DTF))
+                        .build());
+                convo.setStatus("completed");
+                convo.setUpdatedAt(LocalDateTime.now().format(DTF));
+                saveConversations(convoCache.values().stream().toList());
+                emitter.send(SseEmitter.event().name("done").data(""));
+                return;
+            }
+
+            // 4. 生成下一题 prompt
+            String skillQuestionsContext = null;
+            if (convo.getCandidateProfile() != null
+                    && convo.getCandidateProfile().getTechStack() != null
+                    && !convo.getCandidateProfile().getTechStack().isEmpty()) {
+                try {
+                    skillQuestionsContext = vectorStoreService.retrieveSkillQuestions(
+                            convo.getCandidateProfile().getTechStack(), 5);
+                } catch (Exception e) {
+                    log.warn("检索技能相关题目失败: {}", e.getMessage());
+                }
+            }
+
+            String systemPrompt = interviewerAgent.buildSystemPrompt(position, experience,
+                    candidateProfile, nextPhase, skillQuestionsContext);
+            String userPrompt = interviewerAgent.buildQuestionPrompt(questionCount + 1,
+                    convo.getMessages(), nextPhase);
+
+            List<Map<String, String>> promptMessages = List.of(
+                    Map.of("role", "system", "content", systemPrompt),
+                    Map.of("role", "user", "content", userPrompt)
+            );
+
+            // 5. 流式调用 LLM，逐块写入 SseEmitter
+            StringBuilder fullQuestion = new StringBuilder();
+            // 状态：过滤流中的 <think>...</think> 思考过程
+            boolean[] inThink = {false};
+
+            llmService.streamCallLlmBlocking(promptMessages, modelConfig, new LlmService.StreamChunkCallback() {
+                @Override
+                public void onChunk(String chunk) {
+                    String filtered = chunk;
+                    if (inThink[0]) {
+                        int endIdx = filtered.indexOf("</think>");
+                        if (endIdx >= 0) {
+                            inThink[0] = false;
+                            filtered = filtered.substring(endIdx + 8);
+                        } else {
+                            filtered = "";
+                        }
+                    } else {
+                        int startIdx = filtered.indexOf("<think>");
+                        if (startIdx >= 0) {
+                            inThink[0] = true;
+                            String before = filtered.substring(0, startIdx);
+                            String after = filtered.substring(startIdx + 7);
+                            int endIdx = after.indexOf("</think>");
+                            if (endIdx >= 0) {
+                                inThink[0] = false;
+                                filtered = before + after.substring(endIdx + 8);
+                            } else {
+                                filtered = before;
+                            }
+                        }
+                    }
+                    if (filtered.isEmpty()) return;
+                    fullQuestion.append(filtered);
+                    try {
+                        emitter.send(SseEmitter.event().name("question").data("\"" + escapeJsonString(filtered) + "\""));
+                    } catch (IOException e) {
+                        log.warn("[streamProcessAnswerBlocking] 发送 chunk 失败: {}", e.getMessage());
+                    }
+                }
+
+                @Override
+                public void onComplete() {
+                    // 保存完整题目
+                    String q = fullQuestion.toString();
+                    q = llmService.cleanTextContent(q);
+                    if (!q.isEmpty()) {
+                        convo.getMessages().add(Message.builder()
+                                .role("interviewer")
+                                .content(q)
+                                .timestamp(LocalDateTime.now().format(DTF))
+                                .isQuestion(true)
+                                .build());
+                        convo.setCurrentQuestionIndex(questionCount + 1);
+                        convo.setUpdatedAt(LocalDateTime.now().format(DTF));
+                        convo.setStatus("in_progress");
+                        saveConversations(convoCache.values().stream().toList());
+                        log.info("[streamProcessAnswerBlocking] 下一题已保存: 前50字={}", q.substring(0, Math.min(50, q.length())));
+                    }
+                    try {
+                        emitter.send(SseEmitter.event().name("done").data(""));
+                    } catch (IOException e) {
+                        log.warn("[streamProcessAnswerBlocking] 发送完成事件失败: {}", e.getMessage());
+                    }
+                }
+
+                @Override
+                public void onError(String error) {
+                    log.error("[streamProcessAnswerBlocking] 流式生成失败: {}", error);
+                    try {
+                        emitter.send(SseEmitter.event().name("error").data("{\"message\":\"" + error + "\"}"));
+                    } catch (IOException e) {
+                        log.warn("[streamProcessAnswerBlocking] 发送错误事件失败: {}", e.getMessage());
+                    }
+                }
+            });
+        } catch (Exception e) {
+            log.error("[streamProcessAnswerBlocking] 异常: {}", e.getMessage(), e);
+            try {
+                emitter.send(SseEmitter.event().name("error").data("{\"message\":\"" + e.getMessage() + "\"}"));
+            } catch (IOException ioe) {
+                log.warn("[streamProcessAnswerBlocking] 发送错误事件失败: {}", ioe.getMessage());
+            }
+        } finally {
+            lock.unlock();
+            emitter.complete();
+        }
+    }
+
+    private String escapeJsonString(String s) {
+        if (s == null) return "";
+        return s.replace("\\", "\\\\")
+                .replace("\"", "\\\"")
+                .replace("\n", "\\n")
+                .replace("\r", "\\r")
+                .replace("\t", "\\t");
     }
 
     // ============ 会话控制 ============

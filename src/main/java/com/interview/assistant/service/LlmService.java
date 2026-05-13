@@ -9,7 +9,13 @@ import io.github.resilience4j.retry.RetryRegistry;
 import lombok.extern.slf4j.Slf4j;
 import okhttp3.*;
 import org.springframework.stereotype.Service;
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.FluxSink;
 
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -195,10 +201,28 @@ public class LlmService {
         return result.isSuccess() ? result.getContent() : null;
     }
 
+    /**
+     * 仅清理思考过程标签（不含 JSON 提取逻辑），适用面试问题文本。
+     */
+    public String cleanTextContent(String rawContent) {
+        if (rawContent == null) return "";
+        String result = rawContent;
+        result = result.replaceAll("(?s)<think>.*?</think>", "");
+        result = result.replaceAll("(?s)<begin_of_thought>.*?</end_of_thought>", "");
+        result = result.replaceAll("(?s)\\[rationale\\].*?\\[/rationale\\]", "");
+        result = result.replaceAll("(?s)\\[rating\\].*?\\[/rating\\]", "");
+        result = result.replaceAll("\\[\\d+(\\.\\d+)?\\s*points?\\]", "");
+        result = result.replaceAll("(?m)^.*?rating.*?$", "");
+        result = result.replaceAll("(?m)^.*?rationale.*?$", "");
+        result = result.replaceAll("(?m)^.*?explanation.*?$", "");
+        return result.trim();
+    }
+
     private String cleanThinkingContent(String rawContent) {
         if (rawContent == null) return "";
 
         String result = rawContent;
+        result = result.replaceAll("(?s)<think>.*?</think>", "");
         result = result.replaceAll("(?s)<begin_of_thought>.*?</end_of_thought>", "");
         result = result.replaceAll("(?s)\\[rationale\\].*?\\[/rationale\\]", "");
         result = result.replaceAll("(?s)\\[rating\\].*?\\[/rating\\]", "");
@@ -263,8 +287,8 @@ public class LlmService {
                 return null;
             }
             JsonNode contentNode = msg.get("content");
-            if (contentNode == null) {
-                log.warn("[LlmService] content 不存在, resp={}", respBody);
+            if (contentNode == null || contentNode.isNull()) {
+                log.warn("[LlmService] content 不存在或为空, resp={}", respBody);
                 return null;
             }
             return contentNode.asText();
@@ -285,6 +309,200 @@ public class LlmService {
         } catch (Exception e) {
             log.error("[LlmService] 连接测试失败: {}", e.getMessage());
             return false;
+        }
+    }
+
+    /**
+     * 流式回调接口（用于 Spring MVC 非 WebFlux 环境）
+     */
+    @FunctionalInterface
+    public interface StreamChunkCallback {
+        /** 收到一个文本 chunk */
+        void onChunk(String chunk);
+        /** 流结束 */
+        default void onComplete() {}
+        /** 流错误 */
+        default void onError(String error) {}
+    }
+
+    /**
+     * 阻塞式流式调用 LLM，逐行读取 SSE 响应，通过回调返回每个 chunk。
+     * 适用于 Spring MVC 环境，不使用 WebFlux。
+     */
+    public void streamCallLlmBlocking(
+            List<Map<String, String>> messages,
+            AppSettings.ModelConfig modelConfig,
+            StreamChunkCallback callback
+    ) {
+        String apiKey = modelConfig.getApiKey();
+        String baseUrl = modelConfig.getBaseUrl();
+        String model = modelConfig.getModel();
+
+        if (apiKey == null || apiKey.isBlank()) {
+            callback.onError("API Key 未配置");
+            return;
+        }
+
+        String url = baseUrl.endsWith("/") ? baseUrl + "/chat/completions" : baseUrl + "/chat/completions";
+        String requestBody = buildStreamRequestBody(model, messages);
+
+        log.info("[LlmService] 阻塞流式调用 URL={}, model={}", url, model);
+
+        Request request = new Request.Builder()
+                .url(url)
+                .addHeader("Authorization", "Bearer " + apiKey)
+                .addHeader("Content-Type", "application/json")
+                .post(RequestBody.create(requestBody, JSON))
+                .build();
+
+        try (Response response = HTTP_CLIENT.newCall(request).execute()) {
+            if (!response.isSuccessful()) {
+                callback.onError("HTTP " + response.code() + ": " + response.message());
+                return;
+            }
+
+            try (BufferedReader reader = new BufferedReader(
+                    new InputStreamReader(response.body().byteStream(), StandardCharsets.UTF_8))) {
+                String line;
+                int chunkCount = 0;
+                while ((line = reader.readLine()) != null) {
+                    log.debug("[LlmService] 收到行: {}", line);
+                    if (line.startsWith("data: ")) {
+                        String data = line.substring(6);
+                        if ("[DONE]".equals(data)) {
+                            log.info("[LlmService] 收到 [DONE]，共 {} 个 chunk", chunkCount);
+                            callback.onComplete();
+                            return;
+                        }
+                        String content = extractStreamContent(data);
+                        if (content != null && !content.isBlank()) {
+                            chunkCount++;
+                            callback.onChunk(content);
+                        }
+                    }
+                }
+                log.info("[LlmService] 流读取完成，共 {} 个 chunk", chunkCount);
+                callback.onComplete();
+            }
+        } catch (IOException e) {
+            log.error("[LlmService] 流式请求失败: {}", e.getMessage());
+            callback.onError(e.getMessage());
+        }
+    }
+
+    /**
+     * 流式调用 LLM，返回 Flux<String> 每个元素是一个 delta content chunk
+     */
+    public Flux<String> streamCallLlm(
+            List<Map<String, String>> messages,
+            AppSettings.ModelConfig modelConfig
+    ) {
+        String apiKey = modelConfig.getApiKey();
+        String baseUrl = modelConfig.getBaseUrl();
+        String model = modelConfig.getModel();
+
+        if (apiKey == null || apiKey.isBlank()) {
+            return Flux.error(new IllegalStateException("API Key 未配置"));
+        }
+
+        String url = baseUrl.endsWith("/") ? baseUrl + "/chat/completions" : baseUrl + "/chat/completions";
+        String requestBody = buildStreamRequestBody(model, messages);
+
+        log.info("[LlmService] 流式调用 URL={}, model={}", url, model);
+
+        return Flux.create(sink -> {
+            log.info("[LlmService] 开始流式请求...");
+
+            Request request = new Request.Builder()
+                    .url(url)
+                    .addHeader("Authorization", "Bearer " + apiKey)
+                    .addHeader("Content-Type", "application/json")
+                    .post(RequestBody.create(requestBody, JSON))
+                    .build();
+
+            Call call = HTTP_CLIENT.newCall(request);
+
+            // 取消/销毁时主动取消 HTTP 请求，防止后台线程泄漏
+            sink.onCancel(call::cancel);
+            sink.onDispose(() -> {
+                if (!call.isCanceled()) call.cancel();
+            });
+
+            call.enqueue(new Callback() {
+                @Override
+                public void onFailure(Call call, IOException e) {
+                    log.error("[LlmService] 流式请求失败: {}", e.getMessage());
+                    if (!sink.isCancelled()) {
+                        sink.error(e);
+                    }
+                }
+
+                @Override
+                public void onResponse(Call call, Response response) {
+                    log.info("[LlmService] 流式响应状态: {}", response.code());
+                    try (BufferedReader reader = new BufferedReader(
+                            new InputStreamReader(response.body().byteStream(), StandardCharsets.UTF_8))) {
+                        String line;
+                        int chunkCount = 0;
+                        while ((line = reader.readLine()) != null && !sink.isCancelled()) {
+                            log.debug("[LlmService] 收到行: {}", line);
+                            if (line.startsWith("data: ")) {
+                                String data = line.substring(6);
+                                if ("[DONE]".equals(data)) {
+                                    log.info("[LlmService] 收到 [DONE]，共 {} 个 chunk", chunkCount);
+                                    if (!sink.isCancelled()) {
+                                        sink.complete();
+                                    }
+                                    return;
+                                }
+                                String content = extractStreamContent(data);
+                                if (content != null && !content.isBlank()) {
+                                    chunkCount++;
+                                    log.debug("[LlmService] chunk {}: {}", chunkCount, content);
+                                    sink.next(content);
+                                }
+                            }
+                        }
+                        log.info("[LlmService] 流读取完成，共 {} 个 chunk", chunkCount);
+                        if (!sink.isCancelled()) {
+                            sink.complete();
+                        }
+                    } catch (IOException e) {
+                        log.error("[LlmService] 流式读取异常: {}", e.getMessage());
+                        if (!sink.isCancelled()) {
+                            sink.error(e);
+                        }
+                    }
+                }
+            });
+        });
+    }
+
+    private String buildStreamRequestBody(String model, List<Map<String, String>> messages) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("{\"model\":\"").append(model).append("\",\"messages\":[");
+        for (int i = 0; i < messages.size(); i++) {
+            Map<String, String> msg = messages.get(i);
+            sb.append("{\"role\":\"").append(escapeJson(msg.get("role")))
+              .append("\",\"content\":\"").append(escapeJson(msg.get("content"))).append("\"}");
+            if (i < messages.size() - 1) sb.append(",");
+        }
+        sb.append("],\"stream\":true}");
+        return sb.toString();
+    }
+
+    private String extractStreamContent(String data) {
+        try {
+            JsonNode root = objectMapper.readTree(data);
+            JsonNode choices = root.get("choices");
+            if (choices == null || !choices.isArray() || choices.size() == 0) return null;
+            JsonNode delta = choices.get(0).get("delta");
+            if (delta == null) return null;
+            JsonNode content = delta.get("content");
+            if (content == null || content.isNull()) return null;
+            return content.asText();
+        } catch (Exception e) {
+            return null;
         }
     }
 }

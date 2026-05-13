@@ -332,7 +332,7 @@
             }
         }
 
-        async function sendAnswer() {
+async function sendAnswer() {
             var input = document.getElementById('answer-input');
             var answer = input.value.trim();
             var sendBtn = document.getElementById('send-btn');
@@ -344,54 +344,227 @@
             sendBtn.disabled = true;
             sendBtn.textContent = '⏳...';
             input.disabled = true;
+
+            // ====== 流式处理 ======
+            // 1. 添加用户消息占位
+            var userMsgDiv = document.createElement('div');
+            userMsgDiv.className = 'message message-user';
+            userMsgDiv.innerHTML =
+                '<div class="message-content">' +
+                '<div class="message-bubble user-bubble">' + escapeHtml(answer) + '</div>' +
+                '<div class="message-time">' + new Date().toLocaleString('zh-CN') + '</div>' +
+                '</div>' +
+                '<div class="message-avatar user-avatar">👤</div>';
+            document.getElementById('messages-container').appendChild(userMsgDiv);
+            scrollToBottom();
+
+            // 2. 添加 AI 正在输入的占位消息
+            var aiMsgDiv = document.createElement('div');
+            aiMsgDiv.className = 'message message-interviewer';
+            aiMsgDiv.id = 'streaming-msg';
+            aiMsgDiv.innerHTML =
+                '<div class="message-avatar">🤖</div>' +
+                '<div class="message-content">' +
+                '<div class="message-bubble" id="eval-box" style="font-size:0.9em;color:#666;">⏳ 正在评分...</div>' +
+                '<div class="message-bubble" id="question-bubble" style="margin-top:8px;">' +
+                '<span id="streaming-text"></span><span id="streaming-cursor" style="display:inline-block;width:8px;height:16px;background:#4f46e5;margin-left:2px;animation:blink 1s infinite;vertical-align:middle;"></span>' +
+                '</div>' +
+                '<div class="message-time" id="streaming-time"></div>' +
+                '</div>';
+            document.getElementById('messages-container').appendChild(aiMsgDiv);
+            scrollToBottom();
+
+            var fullQuestion = '';
+
             try {
-                var res = await fetch('/api/conversation/' + currentConvoId + '/answer', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({answer: answer})});
+                var res = await fetch(
+                    '/api/conversation/' + currentConvoId + '/stream-answer?answer=' + encodeURIComponent(answer),
+                    { headers: { 'Accept': 'text/event-stream' } }
+                );
+
                 if (!res.ok) {
                     throw new Error('服务器错误: ' + res.status);
                 }
-                var data = await res.json();
-                console.log('[DEBUG] answer response:', JSON.stringify(data, null, 2).substring(0, 1000));
-                console.log('[DEBUG] messages count:', data.messages ? data.messages.length : 0);
-                console.log('[DEBUG] evaluation:', data.evaluation);
-                
-                if (!data.messages || data.messages.length === 0) {
-                    console.error('[DEBUG] 错误: messages为空!');
-                    alert('服务器返回的数据异常，messages为空');
-                    return;
-                }
-                
-                var messages = data.messages || [];
-                var lastMsg = messages[messages.length - 1];
-                console.log('[DEBUG] lastMsg role:', lastMsg && lastMsg.role, 'content preview:', lastMsg && lastMsg.content && lastMsg.content.substring(0, 50));
-                console.log('[DEBUG] lastMsg score:', lastMsg && lastMsg.score, 'feedback:', lastMsg && lastMsg.feedback);
-                
-                input.value = '';
-                renderMessages(data.messages);
-                
-                if (data.isFinished) {
-                    isInterviewActive = false;
-                    document.getElementById('input-area').style.display = 'none';
-                    document.getElementById('end-area').style.display = 'flex';
-                    document.getElementById('status-badge').textContent = '🔴 已结束';
-                    document.getElementById('status-badge').className = 'status-badge status-ended';
-                    document.getElementById('stop-btn').style.display = 'none';
-                    var userMsgs = data.messages.filter(function(m) { return m.role === 'user'; });
-                    if (userMsgs.length > 0) {
-                        var total = 0;
-                        for (var i = 0; i < userMsgs.length; i++) { total += (userMsgs[i].score || 0); }
-                        var avg = (total / userMsgs.length).toFixed(1);
-                        document.getElementById('final-score').innerHTML = '📊 本次面试平均分: <strong>' + avg + '</strong>/10';
+
+                var reader = res.body.getReader();
+                var decoder = new TextDecoder();
+                var buffer = '';
+
+                while (true) {
+                    var result = await reader.read();
+                    if (result.done) break;
+                    buffer += decoder.decode(result.value, { stream: true });
+
+                    var lines = buffer.split('\n');
+                    buffer = lines.pop() || '';
+
+                    var currentEvent = '';
+                    for (var i = 0; i < lines.length; i++) {
+                        var line = lines[i].trim();
+                        if (!line) continue;
+
+                        // Spring SseEmitter 发送 event:name 而非 event: name（冒号后无空格）
+                        if (line.startsWith('event:')) {
+                            currentEvent = line.substring(6).trim();
+                            continue;
+                        }
+
+                        if (line.startsWith('data:')) {
+                            var dataStr = line.substring(5).trim();
+                        } else {
+                            continue;
+                        }
+
+                        // done 事件 data 为空，无需解析 JSON，直接处理
+                        if (currentEvent === 'done') {
+                            var cursor = document.getElementById('streaming-cursor');
+                            if (cursor) cursor.style.display = 'none';
+                            aiMsgDiv.innerHTML =
+                                '<div class="message-avatar">🤖</div>' +
+                                '<div class="message-content">' +
+                                '<div class="message-bubble">' + escapeHtml(cleanDisplayText(fullQuestion)) + '</div>' +
+                                '<div class="message-time">' + new Date().toLocaleString('zh-CN') + '</div>' +
+                                '</div>';
+                            input.value = '';
+                            scrollToBottom();
+
+                            var userMsgs = document.querySelectorAll('.message-user');
+                            var totalScore = 0;
+                            for (var j = 0; j < userMsgs.length; j++) {
+                                var scoreEl = userMsgs[j].querySelector('.eval-details');
+                                if (scoreEl) {
+                                    var scoreText = scoreEl.querySelector('summary').textContent;
+                                    var match = scoreText.match(/(\d+)/);
+                                    if (match) totalScore += parseInt(match[1]);
+                                }
+                            }
+                            var avg = userMsgs.length > 0 ? (totalScore / userMsgs.length).toFixed(1) : '0';
+
+                            isInterviewActive = false;
+                            document.getElementById('input-area').style.display = 'none';
+                            document.getElementById('end-area').style.display = 'flex';
+                            document.getElementById('status-badge').textContent = '🔴 已结束';
+                            document.getElementById('status-badge').className = 'status-badge status-ended';
+                            document.getElementById('stop-btn').style.display = 'none';
+                            document.getElementById('end-title').textContent = '🎉 面试结束';
+                            document.getElementById('end-desc').textContent = '感谢你的参与！';
+                            document.getElementById('final-score').innerHTML = '📊 本次面试平均分: <strong>' + avg + '</strong>/10';
+                            continue;
+                        }
+
+                        if (!dataStr) continue;
+                        try {
+                            var parsed = JSON.parse(dataStr);
+
+                            if (currentEvent === 'eval') {
+                                var score = parsed.score;
+                                var feedback = parsed.feedback || '';
+                                var modelAnswer = parsed.model_answer || '';
+                                var cls = score >= 7 ? 'score-high' : (score >= 4 ? 'score-mid' : 'score-low');
+
+                                // 评分框只显示在用户回答上，不显示在模型消息中
+                                var eb = document.getElementById('eval-box');
+                                if (eb) eb.style.display = 'none';
+
+                                userMsgDiv.querySelector('.message-content').innerHTML =
+                                    '<details class="eval-details ' + cls + '">' +
+                                    '<summary>得分: ' + score + '/10<span class="eval-expand">查看详情 ▼</span></summary>' +
+                                    '<div class="eval-content"><p><strong>💡 点评:</strong> ' + escapeHtml(feedback) + '</p>' +
+                                    '<p><strong>✨ 参考回答:</strong> ' + escapeHtml(modelAnswer) + '</p></div>' +
+                                    '</details>' +
+                                    '<div class="message-bubble user-bubble" style="margin-top:6px;">' + escapeHtml(answer) + '</div>' +
+                                    '<div class="message-time">' + new Date().toLocaleString('zh-CN') + '</div>';
+                                scrollToBottom();
+
+                            } else if (currentEvent === 'question') {
+                                var chunk = typeof parsed === 'string' ? parsed : JSON.stringify(parsed);
+                                chunk = chunk.replace(/^"|"$/g, '');
+                                fullQuestion += chunk;
+                                // 对完整文本做 regex 清理，避免 <think> 跨 chunk 边界被遗漏
+                                var cleanedText = fullQuestion.replace(/<think>[\s\S]*?<\/think>/g, '');
+                                document.getElementById('streaming-text').textContent = cleanedText;
+                                scrollToBottom();
+
+                            } else if (currentEvent === 'question_full') {
+                                // 服务端发来的权威完整题目，替换前端可能因 chunk 丢失而不完整的累加结果
+                                var fullText = parsed;
+                                if (typeof fullText === 'string') {
+                                    fullQuestion = fullText;
+                                    document.getElementById('streaming-text').textContent = cleanDisplayText(fullQuestion);
+                                    scrollToBottom();
+                                }
+
+                            } else if (currentEvent === 'question_complete') {
+                                // 下一题流式输出完成，使用服务端发来的权威完整文本
+                                var cursor = document.getElementById('streaming-cursor');
+                                if (cursor) cursor.style.display = 'none';
+                                var fullText = (typeof parsed === 'string' && parsed) ? parsed : fullQuestion;
+                                if (fullText) fullQuestion = fullText;
+                                aiMsgDiv.innerHTML =
+                                    '<div class="message-avatar">🤖</div>' +
+                                    '<div class="message-content">' +
+                                    '<div class="message-bubble">' + escapeHtml(cleanDisplayText(fullQuestion)) + '</div>' +
+                                    '<div class="message-time">' + new Date().toLocaleString('zh-CN') + '</div>' +
+                                    '</div>';
+                                input.value = '';
+                                scrollToBottom();
+
+                            } else if (currentEvent === 'interview_complete') {
+                                // 面试真正结束——先展示结束语，再显示结束界面
+                                var cursor = document.getElementById('streaming-cursor');
+                                if (cursor) cursor.style.display = 'none';
+                                // 使用服务端发来的结束语权威文本
+                                var closingText = (typeof parsed === 'string' && parsed) ? parsed : fullQuestion;
+                                if (closingText) fullQuestion = closingText;
+                                aiMsgDiv.innerHTML =
+                                    '<div class="message-avatar">🤖</div>' +
+                                    '<div class="message-content">' +
+                                    '<div class="message-bubble">' + escapeHtml(cleanDisplayText(fullQuestion)) + '</div>' +
+                                    '<div class="message-time">' + new Date().toLocaleString('zh-CN') + '</div>' +
+                                    '</div>';
+                                input.value = '';
+                                scrollToBottom();
+
+                                var userMsgs = document.querySelectorAll('.message-user');
+                                var totalScore = 0;
+                                for (var j = 0; j < userMsgs.length; j++) {
+                                    var scoreEl = userMsgs[j].querySelector('.eval-details');
+                                    if (scoreEl) {
+                                        var scoreText = scoreEl.querySelector('summary').textContent;
+                                        var match = scoreText.match(/(\d+)/);
+                                        if (match) totalScore += parseInt(match[1]);
+                                    }
+                                }
+                                var avg = userMsgs.length > 0 ? (totalScore / userMsgs.length).toFixed(1) : '0';
+
+                                isInterviewActive = false;
+                                document.getElementById('input-area').style.display = 'none';
+                                document.getElementById('end-area').style.display = 'flex';
+                                document.getElementById('status-badge').textContent = '🔴 已结束';
+                                document.getElementById('status-badge').className = 'status-badge status-ended';
+                                document.getElementById('stop-btn').style.display = 'none';
+                                document.getElementById('end-title').textContent = '🎉 面试结束';
+                                document.getElementById('end-desc').textContent = '感谢你的参与！';
+                                document.getElementById('final-score').innerHTML = '📊 本次面试平均分: <strong>' + avg + '</strong>/10';
+                            }
+                        } catch (parseErr) {
+                            console.warn('[SSE] 解析失败:', parseErr.message);
+                        }
                     }
                 }
-                scrollToBottom();
+
             } catch (e) {
-                console.error('[DEBUG] 发送失败:', e);
+                console.error('[stream sendAnswer] 失败:', e);
+                var streaming = document.getElementById('streaming-msg');
+                if (streaming) streaming.remove();
                 alert('发送失败: ' + e.message);
             } finally {
                 sendBtn.disabled = false;
                 sendBtn.textContent = '发送 ➤';
-                input.disabled = false;
-                input.focus();
+                if (isInterviewActive) {
+                    input.disabled = false;
+                    input.focus();
+                }
             }
         }
 
@@ -512,6 +685,18 @@
             var div = document.createElement('div');
             div.textContent = text;
             return div.innerHTML;
+        }
+
+        function cleanDisplayText(text) {
+            return text
+                .replace(/<think>[\s\S]*?<\/think>/g, '')
+                .replace(/<begin_of_thought>[\s\S]*?<\/end_of_thought>/g, '')
+                .replace(/\[rationale\][\s\S]*?\[\/rationale\]/g, '')
+                .replace(/\[rating\][\s\S]*?\[\/rating\]/g, '')
+                .replace(/\[\d+(\.\d+)?\s*points?\]/gi, '')
+                .replace(/^.*?rating.*?$/gim, '')
+                .replace(/^.*?rationale.*?$/gim, '')
+                .replace(/^.*?explanation.*?$/gim, '');
         }
 
         // ========== 语音输入 ==========

@@ -118,7 +118,7 @@ public class InterviewerAgent {
         return InterviewPhase.WRAP_UP;
     }
 
-    private String buildSystemPrompt(String position, String experience, String candidateProfile, InterviewPhase phase, String skillQuestionsContext) {
+    public String buildSystemPrompt(String position, String experience, String candidateProfile, InterviewPhase phase, String skillQuestionsContext) {
         String phaseDesc = switch (phase) {
             case OPENING -> "开场阶段，问一些建立 rapport 的问题，如自我介绍、项目经历概述";
             case TECHNICAL -> "技术深入阶段，结合简历问具体的技术问题，考察真实能力";
@@ -148,7 +148,7 @@ public class InterviewerAgent {
                 """.formatted(position, experience, phaseDesc, candidateProfile, skillContextSection);
     }
 
-    private String buildQuestionPrompt(int questionIndex, List<Message> history, InterviewPhase phase) {
+    public String buildQuestionPrompt(int questionIndex, List<Message> history, InterviewPhase phase) {
         String historyText = buildHistorySummary(history, questionIndex);
 
         String phaseInstruction = switch (phase) {
